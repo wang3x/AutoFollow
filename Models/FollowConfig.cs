@@ -8,11 +8,10 @@ public class FollowConfig
 {
     public float CombatEnterRange { get; set; } = 10f;
     public float CombatExitRange { get; set; } = 30f;
-    public float SprintThreshold { get; set; } = 20f;
+    public float SprintThreshold { get; set; } = 10f;
 
     public bool SprintEnabled { get; set; } = true;
     public bool SprintOnlyInCombat { get; set; } = false;
-    public bool SprintAutoRefresh { get; set; } = false;
 
     public bool PauseOnCombat { get; set; } = true;
     public bool PauseOnTargetLost { get; set; } = true;
@@ -23,7 +22,7 @@ public class FollowConfig
     public string? PauseCommand { get; set; } = "/rotation off";
     public string? ResumeCommand { get; set; } = "/rotation Auto";
 
-    public float ScanInterval { get; set; } = 2f;
+    public float ScanInterval { get; set; } = 1f;
     public bool ChatOutput { get; set; } = true;
 
     public List<CustomCommandEntry> CustomCommands { get; set; } = new()

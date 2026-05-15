@@ -145,6 +145,7 @@ public sealed class FollowEngine : IDisposable
         if (_state == FollowState.Combat) return;
 
         _sprint.Update(DistanceToTarget, _conditionManager.InCombat);
+        _sprint.TryForceSprint(); // 跟随时疾跑好了就用
 
         // 目标移动超过阈值 → 立刻发新路径（vnavmesh会自动中断当前路径）
         if (_lastSentPosition != null && Vector3.Distance(targetPos, _lastSentPosition.Value) < MoveThreshold)

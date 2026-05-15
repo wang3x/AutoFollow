@@ -76,17 +76,13 @@ public sealed class SprintController : IDisposable
 
         actionMgr->UseAction(ActionType.GeneralAction, SprintActionId);
         _isSprinting = true;
-
-        if (_config.SprintAutoRefresh)
-        {
-            // 疾跑持续时间 ~20s，在持续期间持续检测是否需要补开
-        }
     }
 
-    /// <summary>强制尝试疾跑（恢复跟随时调用，无视距离检查）</summary>
+    /// <summary>强制尝试疾跑（跟随时调用，无视距离检查）</summary>
     public void TryForceSprint()
     {
         if (!_config.SprintEnabled) return;
+        _isSprinting = false; // 重置状态，允许重新尝试
         TrySprint();
     }
 

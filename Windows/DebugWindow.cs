@@ -261,8 +261,8 @@ public sealed class DebugWindow
             {
                 _config.CombatEnterRange = 10f;
                 _config.CombatExitRange = 30f;
-                _config.SprintThreshold = 20f;
-                _config.ScanInterval = 2f;
+                _config.SprintThreshold = 10f;
+                _config.ScanInterval = 1f;
                 _onSave();
             }
         }
@@ -270,7 +270,6 @@ public sealed class DebugWindow
         {
             var v = _config.SprintEnabled; if (ImGui.Checkbox("启用疾跑##s1", ref v)) _config.SprintEnabled = v;
             v = _config.SprintOnlyInCombat; if (ImGui.Checkbox("仅战斗疾跑##s2", ref v)) _config.SprintOnlyInCombat = v;
-            v = _config.SprintAutoRefresh; if (ImGui.Checkbox("自动续疾跑##s3", ref v)) _config.SprintAutoRefresh = v;
         }
         if (ImGui.CollapsingHeader("聊天消息", ImGuiTreeNodeFlags.DefaultOpen))
         {
@@ -371,8 +370,6 @@ public sealed class DebugWindow
   /ft 玩家名    指定名字跟
   /ff          切换跟/不跟
   /fes         紧急停止，跟随和循环全停
-  建议手动暂停自动输出插件(/rotation off)
-  打开 BossMod 的 AI 功能
   /flp         暂停循环插件
   /flr         恢复循环插件
   /flt         切换循环
@@ -415,8 +412,8 @@ public sealed class DebugWindow
 
   进入战斗区(码)  默认 10   跟目标小于这个就停
   离开战斗区(码)  默认 30   跟目标大于这个就走
-  疾跑触发(码)    默认 20   超过这个距离开疾跑
-  坐标扫描间隔(秒)默认 2    隔几秒看一次目标位置
+  疾跑触发(码)    默认 10   超过这个距离开疾跑
+  坐标扫描间隔(秒)默认 1    隔几秒看一次目标位置
 
   紧急停止热键    默认 F8，按一下就停（不用长按）
 
