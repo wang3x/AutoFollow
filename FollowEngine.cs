@@ -9,7 +9,7 @@ using AutoFollow.Windows;
 
 namespace AutoFollow;
 
-public sealed class FollowEngine : IDisposable
+    public sealed class FollowEngine : IDisposable
 {
     private readonly IObjectTable _objectTable;
     private readonly IChatGui _chatGui;
@@ -48,14 +48,17 @@ public sealed class FollowEngine : IDisposable
 
     public event Action<FollowState, FollowState>? OnStateChanged;
 
+    private readonly Func<ushort?> _getTerritory;
+
     public FollowEngine(
         IObjectTable objectTable, IChatGui chatGui, IPluginLog logger, IFramework framework,
         FollowConfig config, ConditionManager conditionManager, SprintController sprint,
-        IPCService ipc, VnavmeshFollow vnavmesh, DebugLog debugLog)
+        IPCService ipc, VnavmeshFollow vnavmesh, DebugLog debugLog,
+        Func<ushort?> getTerritory)
     {
         _objectTable = objectTable; _chatGui = chatGui; _logger = logger; _framework = framework;
         _config = config; _conditionManager = conditionManager; _sprint = sprint;
-        _ipc = ipc; _vnavmesh = vnavmesh; _debugLog = debugLog;
+        _ipc = ipc; _vnavmesh = vnavmesh; _debugLog = debugLog; _getTerritory = getTerritory;
     }
 
     private void PrintMsg(string msg)
@@ -73,6 +76,9 @@ public sealed class FollowEngine : IDisposable
     {
         if (_state is FollowState.Idle or FollowState.Paused or FollowState.EmergencyStopped)
             return;
+
+        // 地图黑名单检测
+        if (CheckBlacklistedMap()) return;
 
         // 脱战检测 — 每帧都检查，不跟随扫描间隔
         _conditionManager.Update();
@@ -144,8 +150,27 @@ public sealed class FollowEngine : IDisposable
 
         if (_state == FollowState.Combat) return;
 
-        _sprint.Update(DistanceToTarget, _conditionManager.InCombat);
-        _sprint.TryForceSprint(); // 跟随时疾跑好了就用
+        if (_config.UseMount)
+        {
+            _sprint.TryMount();
+        }
+        else if (_config.SprintEnabled)
+        {
+            if (_config.SprintAlwaysOn)
+            {
+                // 无脑疾跑
+                _sprint.TryForceSprint();
+            }
+            else
+            {
+                // 目标在疾跑或距离>阈值 → 开疾跑
+                var targetSprinting = SprintController.TargetIsSprinting(target);
+                if (targetSprinting || DistanceToTarget > _config.SprintThreshold)
+                    _sprint.TryForceSprint();
+                else
+                    _sprint.Update(DistanceToTarget, _conditionManager.InCombat);
+            }
+        }
 
         // 目标移动超过阈值 → 立刻发新路径（vnavmesh会自动中断当前路径）
         if (_lastSentPosition != null && Vector3.Distance(targetPos, _lastSentPosition.Value) < MoveThreshold)
@@ -157,9 +182,39 @@ public sealed class FollowEngine : IDisposable
         SetState(FollowState.Following);
     }
 
+    /// <summary>检查目标是否是Boss级敌人</summary>
+    private unsafe bool IsBossTarget()
+    {
+        if (_followTargetId == null) return false;
+        var obj = _objectTable.SearchById((uint)_followTargetId.Value);
+        if (obj == null || obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc) return false;
+
+        var chara = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)obj.Address;
+        if (chara == null) return false;
+
+        // 等级 > 80
+        if (chara->Level <= 80) return false;
+
+        // 玩家血量
+        var player = _objectTable[0];
+        if (player == null) return false;
+        var pc = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)player.Address;
+        if (pc == null) return false;
+
+        // 目标血量 > 玩家血量的20倍
+        return chara->MaxHealth > pc->MaxHealth * 20;
+    }
+
     /// <summary>恢复跟随：开疾跑、立即扫描坐标、发送移动</summary>
     private void ResumeFollow()
     {
+        // Boss 战中不恢复
+        if (_conditionManager.InCombat && IsBossTarget())
+        {
+            _debugLog.Log("state", "Boss战中，跳过恢复");
+            return;
+        }
+
         // 恢复时强制开疾跑
         _sprint.TryForceSprint();
         _debugLog.Log("sprint", "force sprint on resume");
@@ -172,6 +227,21 @@ public sealed class FollowEngine : IDisposable
 
         _ipc.PauseLoop();
         SetState(FollowState.Following);
+    }
+
+    private bool CheckBlacklistedMap()
+    {
+        var territory = _getTerritory();
+        if (territory == null || _config.BlacklistedMaps.Count == 0) return false;
+        if (!_config.BlacklistedMaps.Contains(territory.Value)) return false;
+
+        if (_state != FollowState.Paused)
+        {
+            PrintMsg("[强效跟随] 当前地图在黑名单中，暂停跟随");
+            _debugLog.Log("状态", $"地图{territory.Value}在黑名单中");
+            _vnavmesh.Stop(); SetState(FollowState.Paused);
+        }
+        return true;
     }
 
     private IGameObject? ResolveTarget()

@@ -4,7 +4,7 @@
   "Punchline": "vnavmesh寻路跟随，自动疾跑，与循环插件协作",
   "Description": "基于vnavmesh的智能自动跟随插件。自动疾跑追赶，通过陌语命令与循环插件协同工作。支持自定义命令、紧急停止热键、调试日志窗口。",
   "InternalName": "AutoFollow",
-  "AssemblyVersion": "1.4.6.0",
+  "AssemblyVersion": "1.4.7.0",
   "DalamudApiLevel": 15,
   "RepoUrl": "https://github.com/wang3x/AutoFollow",
   "Tags": [ "follow", "auto", "dungeon", "vnavmesh", "ipc" ]

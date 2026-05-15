@@ -17,6 +17,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IDalamudPluginInterface _pi;
     private readonly ICommandManager _commandManager;
     private readonly IChatGui _chatGui;
+    private readonly IClientState _clientState;
     private readonly IObjectTable _objectTable;
     private readonly ICondition _condition;
     private readonly IFramework _framework;
@@ -40,6 +41,7 @@ public sealed class Plugin : IDalamudPlugin
         IDalamudPluginInterface pi,
         ICommandManager commandManager,
         IChatGui chatGui,
+        IClientState clientState,
         IObjectTable objectTable,
         ICondition condition,
         IFramework framework,
@@ -49,6 +51,7 @@ public sealed class Plugin : IDalamudPlugin
         _pi = pi;
         _commandManager = commandManager;
         _chatGui = chatGui;
+        _clientState = clientState;
         _objectTable = objectTable;
         _condition = condition;
         _framework = framework;
@@ -82,17 +85,27 @@ public sealed class Plugin : IDalamudPlugin
             getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             getBossActive: () => false,
             getInCombat: () => _followEngine?.Conditions.InCombat ?? false,
-            onClearTarget: () => _followEngine?.SetTarget(null));
+            onClearTarget: () => _followEngine?.SetTarget(null),
+            onMoveFlag: () => _commandManager.ProcessCommand("/vnav moveflag"),
+            onFlyFlag: () => { _commandManager.ProcessCommand("/mount"); _commandManager.ProcessCommand("/vnav flyflag"); },
+            onStop: () => _commandManager.ProcessCommand("/vnav stop"),
+            getTerritory: () => {
+                try { var prop = typeof(IClientState).GetProperty("TerritoryType"); if (prop == null) return null; return (ushort?)prop.GetValue(_clientState); }
+                catch { return null; }
+            });
 
         _miniWindow = new MiniWindow(
             getState: () => _followEngine?.State ?? FollowState.Idle,
             getTargetName: () => _followEngine?.TargetName,
             getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             getInCombat: () => _followEngine?.Conditions.InCombat ?? false,
-            openMainWindow: () => _debugWindow.IsOpen = true,
-            emergencyStop: () => _followEngine?.EmergencyStop());
+            toggleMainWindow: () => _debugWindow.IsOpen = !_debugWindow.IsOpen,
+            stopResume: () => { if (_followEngine?.State is FollowState.Idle or FollowState.Paused or FollowState.EmergencyStopped or FollowState.TargetLost) _followEngine?.Resume(); else _followEngine?.EmergencyStop(); },
+            smartFollow: SmartFollow);
 
         _pi.UiBuilder.Draw += DrawUi;
+        _pi.UiBuilder.OpenMainUi += () => _miniWindow.IsOpen = !_miniWindow.IsOpen;
+        _pi.UiBuilder.OpenConfigUi += () => _debugWindow.IsOpen = !_debugWindow.IsOpen;
 
         _framework.Update += FirstFrameInit;
 
@@ -111,10 +124,20 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
 
         _vnavmesh = new VnavmeshFollow(_ipc.Vnavmesh);
 
+        // 反射读取 TerritoryType（API 15 可能不存在）
+        var terrProp = typeof(IClientState).GetProperty("TerritoryType");
+        Func<ushort?> getTerr = () =>
+        {
+            if (terrProp == null) return null;
+            try { return (ushort)terrProp.GetValue(_clientState)!; }
+            catch { return null; }
+        };
+
         _followEngine = new FollowEngine(
             _objectTable, _chatGui, _logger, _framework,
             _followConfig, _conditionManager, _sprint,
-            _ipc, _vnavmesh, _debugLog);
+            _ipc, _vnavmesh, _debugLog,
+            getTerritory: getTerr);
 
         // 紧急停止热键检查（每帧轻量检测）
         _framework.Update += CheckEmergencyHotkey;
@@ -232,6 +255,46 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             case CommandAction.OpenConfig:
                 _debugWindow.IsOpen = !_debugWindow.IsOpen;
                 break;
+        }
+    }
+
+    private void SmartFollow()
+    {
+        unsafe
+        {
+            var ts = FFXIVClientStructs.FFXIV.Client.Game.Control.TargetSystem.Instance();
+            if (ts == null || ts->Target == null) { _chatGui.Print("[强效跟随] 未选中目标"); return; }
+
+            var target = ts->Target;
+            var targetName = target->NameString;
+            if (string.IsNullOrEmpty(targetName)) return;
+
+            // 选中了玩家 → 直接跟随
+            var obj = _objectTable.SearchById(target->EntityId);
+            if (obj != null && obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Player)
+            {
+                _followEngine?.SetTarget(targetName);
+                ts->Target = null;
+                _chatGui.Print($"[强效跟随] 开始跟随: {targetName}");
+                return;
+            }
+
+            // 选中了敌方NPC → 跟随这个NPC的当前目标（通常是坦克）
+            var chara = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)target;
+            var enemyTargetId = chara->TargetId;
+            if (enemyTargetId.Id != 0 && enemyTargetId.Id != 0xE0000000)
+            {
+                var enemyTarget = _objectTable.SearchById(enemyTargetId.Id);
+                if (enemyTarget != null)
+                {
+                    _followEngine?.SetTarget(enemyTarget.Name.TextValue);
+                    ts->Target = null;
+                    _chatGui.Print($"[强效跟随] 跟随敌方目标: {enemyTarget.Name.TextValue}");
+                    return;
+                }
+            }
+
+            _chatGui.Print("[强效跟随] 无法确定跟随目标");
         }
     }
 

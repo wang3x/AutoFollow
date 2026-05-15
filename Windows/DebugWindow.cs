@@ -16,6 +16,10 @@ public sealed class DebugWindow
     private readonly Action<Vector3> _onManualMove;
     private readonly Action _onSave;
     private readonly Action _onCommandReload;
+    private readonly Action _onMoveFlag;
+    private readonly Action _onFlyFlag;
+    private readonly Action _onStop;
+    private readonly Func<ushort?> _getTerritory;
     // 状态栏
     private readonly Func<FollowState> _getState;
     private readonly Func<string?> _getTargetName;
@@ -26,29 +30,25 @@ public sealed class DebugWindow
 
     private bool _autoScroll = true;
     private string _filter = "";
-    private string _newCommandText = "";
-    private int _newCommandAction;
-    private string _newCommandDesc = "";
-    private bool _showAddCommandDialog;
-    private static readonly string[] ActionNames = Enum.GetNames<CommandAction>();
     private bool _waitingForKey;
     private string _hotkeyButtonLabel = "";
     private float _manualX, _manualY, _manualZ;
     private DateTime _lastScan;
 
-    public bool IsOpen { get; set; } = true;
+    public bool IsOpen { get; set; } = false;
 
     public DebugWindow(DebugLog log, PluginStatusChecker statusChecker,
         FollowConfig config, Func<Vector3?> getPlayerPos, Func<Vector3?> getTargetPos,
         Action<Vector3> onManualMove, Action onSave, Action onCommandReload,
         Func<FollowState> getState, Func<string?> getTargetName, Func<float> getDistance,
-        Func<bool> getBossActive, Func<bool> getInCombat, Action onClearTarget)
+        Func<bool> getBossActive, Func<bool> getInCombat, Action onClearTarget,
+        Action onMoveFlag, Action onFlyFlag, Action onStop, Func<ushort?> getTerritory)
     {
         _log = log; _statusChecker = statusChecker; _config = config;
         _getPlayerPos = getPlayerPos; _getTargetPos = getTargetPos;
         _onManualMove = onManualMove; _onSave = onSave; _onCommandReload = onCommandReload;
         _getState = getState; _getTargetName = getTargetName; _getDistance = getDistance;
-        _getBossActive = getBossActive; _getInCombat = getInCombat; _onClearTarget = onClearTarget;
+        _getBossActive = getBossActive; _getInCombat = getInCombat; _onClearTarget = onClearTarget; _onMoveFlag = onMoveFlag; _onFlyFlag = onFlyFlag; _onStop = onStop; _getTerritory = getTerritory;
     }
 
     public void Draw()
@@ -64,11 +64,12 @@ public sealed class DebugWindow
         DrawStatusBar();
 
         ImGui.BeginTabBar("##tabs", ImGuiTabBarFlags.None);
-        if (ImGui.BeginTabItem("指令日志")) { DrawLogTab(); ImGui.EndTabItem(); }
         if (ImGui.BeginTabItem("设置")) { DrawSettingsTab(); ImGui.EndTabItem(); }
         if (ImGui.BeginTabItem("坐标")) { DrawCoordTab(); ImGui.EndTabItem(); }
         if (ImGui.BeginTabItem("插件状态")) { DrawStatusTab(); ImGui.EndTabItem(); }
         if (ImGui.BeginTabItem("使用说明")) { DrawHelpTab(); ImGui.EndTabItem(); }
+        if (ImGui.BeginTabItem("地图黑名单")) { DrawBlacklistTab(); ImGui.EndTabItem(); }
+        if (ImGui.BeginTabItem("指令日志")) { DrawLogTab(); ImGui.EndTabItem(); }
         ImGui.EndTabBar();
         ImGui.End();
     }
@@ -227,6 +228,17 @@ public sealed class DebugWindow
         ImGui.TextUnformatted(tp != null ? $"X: {tp.Value.X:F2}  Y: {tp.Value.Y:F2}  Z: {tp.Value.Z:F2}" : "无目标");
 
         ImGui.Spacing();
+        ImGui.TextUnformatted("--- 小地图旗 ---");
+        if (ImGui.Button("移动到旗"))
+            _onMoveFlag();
+        ImGui.SameLine();
+        if (ImGui.Button("飞到旗"))
+            _onFlyFlag();
+        ImGui.SameLine();
+        if (ImGui.Button("停止移动"))
+            _onStop();
+
+        ImGui.Spacing();
         ImGui.TextUnformatted("--- 手动移动 ---");
         ImGui.SetNextItemWidth(80); ImGui.InputFloat("X##mx", ref _manualX); ImGui.SameLine();
         ImGui.SetNextItemWidth(80); ImGui.InputFloat("Y##my", ref _manualY); ImGui.SameLine();
@@ -235,7 +247,6 @@ public sealed class DebugWindow
         ImGui.SameLine();
         if (ImGui.Button("复制玩家坐标")) { if (pp != null) { _manualX = pp.Value.X; _manualY = pp.Value.Y; _manualZ = pp.Value.Z; } }
         ImGui.SameLine();
-        // 读旗功能因国服ClientStructs不兼容已移除
 
         ImGui.EndChild();
     }
@@ -249,10 +260,10 @@ public sealed class DebugWindow
             if (ImGui.InputText("进入战斗区(y)##ce", ref str, 16)) { float v; if (float.TryParse(str, out v)) _config.CombatEnterRange = v; }
             str = _config.CombatExitRange.ToString("F1");
             if (ImGui.InputText("离开战斗区(y)##cx", ref str, 16)) { float v; if (float.TryParse(str, out v)) _config.CombatExitRange = v; }
-            str = _config.SprintThreshold.ToString("F1");
-            if (ImGui.InputText("疾跑触发(y)##st", ref str, 16)) { float v; if (float.TryParse(str, out v)) _config.SprintThreshold = v; }
             var scanStr = _config.ScanInterval.ToString("F1");
             if (ImGui.InputText("坐标扫描间隔(秒)##si", ref scanStr, 16)) { float v; if (float.TryParse(scanStr, out v) && v >= 0.5f) _config.ScanInterval = v; }
+            var stStr = _config.SprintThreshold.ToString("F1");
+            if (ImGui.InputText("疾跑距离(码)##st", ref stStr, 16)) { float v; if (float.TryParse(stStr, out v)) _config.SprintThreshold = v; }
             ImGui.TextUnformatted("说明: ≤进入战斗区暂停跟随, >离开战斗区继续跟随, 脱战1秒恢复");
             ImGui.Spacing();
             if (ImGui.Button("保存距离")) { _onSave(); }
@@ -261,20 +272,41 @@ public sealed class DebugWindow
             {
                 _config.CombatEnterRange = 10f;
                 _config.CombatExitRange = 30f;
-                _config.SprintThreshold = 10f;
+                _config.SprintThreshold = 20f;
                 _config.ScanInterval = 1f;
                 _onSave();
             }
         }
         if (ImGui.CollapsingHeader("疾跑设置", ImGuiTreeNodeFlags.DefaultOpen))
         {
-            var v = _config.SprintEnabled; if (ImGui.Checkbox("启用疾跑##s1", ref v)) _config.SprintEnabled = v;
-            v = _config.SprintOnlyInCombat; if (ImGui.Checkbox("仅战斗疾跑##s2", ref v)) _config.SprintOnlyInCombat = v;
+            var spr = _config.SprintEnabled;
+            if (ImGui.Checkbox("启用疾跑##s1", ref spr))
+            {
+                _config.SprintEnabled = spr;
+                if (spr) _config.UseMount = false;
+            }
+            var mount = _config.UseMount;
+            if (ImGui.Checkbox("使用坐骑##s2", ref mount))
+            {
+                _config.UseMount = mount;
+                if (mount) _config.SprintEnabled = false;
+            }
+            if (_config.SprintEnabled)
+            {
+                var ao = _config.SprintAlwaysOn;
+                if (ImGui.Checkbox("无脑疾跑##s4", ref ao)) _config.SprintAlwaysOn = ao;
+                if (!ao)
+                {
+                    var v = _config.SprintOnlyInCombat;
+                    if (ImGui.Checkbox("仅战斗疾跑##s3", ref v)) _config.SprintOnlyInCombat = v;
+                    ImGui.TextUnformatted("距离>疾跑距离或目标疾跑时自动开");
+                }
+            }
         }
         if (ImGui.CollapsingHeader("聊天消息", ImGuiTreeNodeFlags.DefaultOpen))
         {
             var v = _config.ChatOutput;
-            if (ImGui.Checkbox("启用聊天提示##chat", ref v)) _config.ChatOutput = v;
+            if (ImGui.Checkbox("启用聊天提示##chat", ref v)) { _config.ChatOutput = v; _onSave(); }
         }
         if (ImGui.CollapsingHeader("紧急停止热键", ImGuiTreeNodeFlags.DefaultOpen))
         {
@@ -286,14 +318,6 @@ public sealed class DebugWindow
             var s = _config.PauseCommand ?? "";             if (ImGui.InputText("暂停命令##pc", ref s, 128)) _config.PauseCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
             s = _config.ResumeCommand ?? ""; if (ImGui.InputText("恢复命令##rc", ref s, 128)) _config.ResumeCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
             ImGui.TextUnformatted("默认支持 RotationSolverReborn（/rotation off, /rotation Auto）");
-        }
-        if (ImGui.CollapsingHeader("自定义命令"))
-        {
-            DrawCommandTable();
-            if (_showAddCommandDialog) DrawAddCommandDialog();
-            if (ImGui.Button("+ 添加")) { _showAddCommandDialog = true; _newCommandText = ""; _newCommandAction = 0; _newCommandDesc = ""; }
-            ImGui.SameLine();
-            if (ImGui.Button("保存")) { _onSave(); _onCommandReload(); }
         }
         ImGui.Separator();
         if (ImGui.Button("保存全部")) { _onSave(); _onCommandReload(); }
@@ -316,41 +340,6 @@ public sealed class DebugWindow
         }
     }
 
-    private void DrawCommandTable()
-    {
-        if (!ImGui.BeginTable("##cm", 5, ImGuiTableFlags.Borders|ImGuiTableFlags.RowBg)) return;
-        ImGui.TableSetupColumn("命令", ImGuiTableColumnFlags.WidthFixed, 90);
-        ImGui.TableSetupColumn("动作", ImGuiTableColumnFlags.WidthFixed, 90);
-        ImGui.TableSetupColumn("说明", ImGuiTableColumnFlags.WidthStretch);
-        ImGui.TableSetupColumn("启用", ImGuiTableColumnFlags.WidthFixed, 35);
-        ImGui.TableSetupColumn("删除", ImGuiTableColumnFlags.WidthFixed, 35);
-        ImGui.TableHeadersRow();
-        int toRemove = -1;
-        for (int i = 0; i < _config.CustomCommands.Count; i++)
-        {
-            var e2 = _config.CustomCommands[i];
-            ImGui.TableNextRow(); ImGui.TableNextColumn(); ImGui.TextUnformatted(e2.Command);
-            ImGui.TableNextColumn(); ImGui.TextUnformatted(e2.Action.ToString());
-            ImGui.TableNextColumn(); ImGui.TextUnformatted(e2.Description);
-            ImGui.TableNextColumn(); var en = e2.Enabled; if (ImGui.Checkbox($"##e{i}", ref en)) e2.Enabled = en;
-            ImGui.TableNextColumn(); if (ImGui.Button($"X##d{i}")) toRemove = i;
-        }
-        ImGui.EndTable();
-        if (toRemove >= 0) { _config.CustomCommands.RemoveAt(toRemove); _onCommandReload(); }
-    }
-
-    private void DrawAddCommandDialog()
-    {
-        ImGui.OpenPopup("添加命令");
-        if (!ImGui.BeginPopupModal("添加命令", ref _showAddCommandDialog, ImGuiWindowFlags.AlwaysAutoResize)) return;
-        ImGui.InputText("命令", ref _newCommandText, 64);
-        var ai = _newCommandAction; if (ImGui.Combo("动作", ref ai, ActionNames, ActionNames.Length)) _newCommandAction = ai;
-        ImGui.InputText("说明", ref _newCommandDesc, 256);
-        if (ImGui.Button("确定")) { if (!string.IsNullOrWhiteSpace(_newCommandText)) { _config.CustomCommands.Add(new CustomCommandEntry{Command=_newCommandText.TrimStart('/'),Action=(CommandAction)_newCommandAction,Description=_newCommandDesc}); _showAddCommandDialog=false; } }
-        ImGui.SameLine(); if (ImGui.Button("取消")) _showAddCommandDialog = false;
-        ImGui.EndPopup();
-    }
-
     // ════════════ 页: 使用说明 ════════════
 
     private void DrawHelpTab()
@@ -360,106 +349,140 @@ public sealed class DebugWindow
         ImGui.EndChild();
     }
 
+    // ════════════ 页: 地图黑名单 ════════════
+    private string _newMapId = "";
+    private void DrawBlacklistTab()
+    {
+        ImGui.BeginChild("##bl", new Vector2(0, 0), false);
+        var tid = _getTerritory();
+        ImGui.TextUnformatted(tid != null ? $"当前地图ID: {tid.Value}" : "当前地图ID: 无法获取");
+        ImGui.Separator();
+        ImGui.TextUnformatted("黑名单中的地图不会触发跟随，多个ID用逗号分隔");
+        ImGui.Spacing();
+        ImGui.SetNextItemWidth(200);
+        ImGui.InputText("地图ID", ref _newMapId, 64);
+        ImGui.SameLine();
+        if (ImGui.Button("添加"))
+        {
+            foreach (var part in _newMapId.Split(',', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (ushort.TryParse(part.Trim(), out var id) && !_config.BlacklistedMaps.Contains(id))
+                    _config.BlacklistedMaps.Add(id);
+            }
+            _newMapId = ""; _onSave();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("保存")) _onSave();
+        ImGui.Separator();
+        int toRemove = -1;
+        if (_config.BlacklistedMaps.Count == 0)
+            ImGui.TextUnformatted("（无）");
+        else for (int i = 0; i < _config.BlacklistedMaps.Count; i++)
+        {
+            ImGui.TextUnformatted($"  {_config.BlacklistedMaps[i]}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton($"X##b{i}")) toRemove = i;
+        }
+        if (toRemove >= 0) { _config.BlacklistedMaps.RemoveAt(toRemove); _onSave(); }
+        ImGui.EndChild();
+    }
+
     private const string HelpText = @"
 【插件说明】
-  打本自动跟人走。依靠 vnavmesh 寻路，所以必须先装好 vnavmesh。
+  打本自动跟人走。依靠 vnavmesh 寻路，必须先装好 vnavmesh。
 
 【命令】
 
-  /ftar         跟当前选中的目标（选人→打命令→开始跟）
-  /ft 玩家名    指定名字跟
-  /ff          切换跟/不跟
-  /fes         紧急停止，跟随和循环全停
-  /flp         暂停循环插件
-  /flr         恢复循环插件
-  /flt         切换循环
-  /fst         看状态
-  /fdbg        打开/关闭主窗口
+  /ftar         跟当前选中的目标
+  /ft 玩家名    按名字跟随
+  /ff           切换跟/不跟
+  /fes          紧急停止
+  /flp          暂停循环插件
+  /flr          恢复循环插件
+  /flt          切换循环
+  /fst          看状态
+  /fdbg         打开/关闭主窗口
 
-【运行逻辑】
+【核心运行逻辑】
 
-  每 N 秒（默认 2 秒）扫描一次目标坐标，发给 vnavmesh 走过去。
+  脱战检测每帧都跑，坐标扫描按设定间隔执行（默认1秒）。
 
-  跟人走路中
-    → 距离目标 ≤ 10码 + 过了2秒启动保护
-    → 停！暂停跟随，通知循环插件开始打
+  ● 开始跟随
+     设置目标后 2 秒内不触发暂停（启动保护期）
 
-  停住后
-    → 距离目标 > 30码 → 走！恢复跟随，暂停循环
-    → 脱战超过 1 秒   → 走！（但距离还在10码内就不走，防反复横跳）
+  ● 跟人走路中
+     距离 ≤ 10码 + 过了启动保护期 → 暂停跟随
+     发恢复命令给循环插件接手打怪
 
-  每次恢复走的时候：
-    疾跑能用就立刻开疾跑
-    立刻扫一次目标坐标（不等那2秒间隔）
-    清掉坐标缓存，强制发一次移动
+  ● 停住后怎么恢复
+     距离 > 30码 → 恢复跟随，暂停循环
+     脱战 > 1秒  → 恢复跟随（但距离还在10码内不恢复，防反复横跳）
+     Boss监测：目标为BattleNpc、等级>80、血量>玩家20倍 → 不恢复
 
-  刚设好目标 2 秒内不会因为距离近就停，免得刚跟上就停。
+  ● 每次恢复跟随时
+     疾跑好了就开（或用坐骑）
+     立即扫描一次坐标（不等间隔）
+     清坐标缓存，强制发移动
 
-  脱战检测每帧都跑，不跟随扫描间隔，所以一脱战最多等 1 秒就恢复。
+  ● 疾跑触发
+     距离>20码 或 跟随目标正在疾跑 → 自动开疾跑
+
+  ● 移动方式
+     目标移动超过0.5码 → 立刻发新路径给 vnavmesh
+     vnavmesh自动中断当前路径重新规划
+
+  ● 疾跑/坐骑
+     疾跑和坐骑互斥，只能开一个
+     坐骑模式下非战斗自动上坐骑
+
+  ● 地图黑名单
+     添加地图ID后，在该地图中跟随自动暂停
 
 【迷你窗口】
-  加载后自动打开，不占地方：
 
-    ●小明 12.3码 战 [主] [停]
+  ●小明 12.3码 [急停] [跟随]
 
-  圆点颜色：绿=跟随中  黄=暂停中  红=紧急停止
-  战/休 = 角色自己在不在打
-  [主] = 打开主窗口  [停] = 紧急停止
-
-  迷你窗口可以拖到不碍眼的地方。
+  绿/黄/红圈 = 跟随中/暂停/紧急停止
+  [急停] = 紧急停止，暂停状态下显示[恢复]
+  [跟随] = 智能跟随（选玩家直接跟，选怪跟怪的目标）
 
 【主窗口 - 设置页】
 
-  进入战斗区(码)  默认 10   跟目标小于这个就停
-  离开战斗区(码)  默认 30   跟目标大于这个就走
-  疾跑触发(码)    默认 10   超过这个距离开疾跑
-  坐标扫描间隔(秒)默认 1    隔几秒看一次目标位置
+  进入战斗区(码)  默认10  跟目标≤此值就暂停
+  离开战斗区(码)  默认30  跟目标>此值就恢复
+  疾跑触发(码)     >20码或目标疾跑时开
+  扫描间隔(秒)    默认1   隔几秒看一次目标
+  热键: F8 按一下就停
+  循环命令: /rotation off / rotation Auto
 
-  紧急停止热键    默认 F8，按一下就停（不用长按）
+【坐标页 - 旗子快捷按钮】
+  [移动到旗] /vnav moveflag
+  [飞到旗]   先上坐骑→/vnav flyflag
+  [停止移动] /vnav stop
 
-  循环插件命令    默认 /rotation off 和 /rotation Auto
-                  用别的插件自己改
+【插件状态页】
+  检测 vnavmesh / BossMod / RotationSolver 是否安装启用。
 
-  自定义命令      自己加/删/改命令，默认折叠
-
-【主窗口 - 坐标页】
-  实时看自己和目标的坐标，可以手动填坐标让 vnavmesh 走过去。
-
-【主窗口 - 插件状态页】
-  点重新检测看 vnavmesh、BossMod 有没有装。
-
-【主窗口 - 指令日志页】
-  插件每步操作都记在这里。
-  顶部的类别按钮可以点，点一下隐藏该类日志，再点恢复。
-  复制按钮一键复制当前显示的日志。
-
-【主窗口 - 使用说明页】
-  就是你现在看的这个。
+【指令日志页】
+  顶部分类按钮可点击过滤。
+  [复制] 一键复制当前显示的日志。
 
 【循环插件配合】
 
-  设置里填好命令（默认 RotationSolverReborn）：
-    暂停命令: /rotation off
-    恢复命令: /rotation Auto
+  暂停命令: /rotation off
+  恢复命令: /rotation Auto
+  用别的插件自己改。
 
   工作流程：
-    跟人走 → 距离 ≤ 10码 → 停 → 通知循环插件开始打
-    打完 → 脱战1秒 或 距离 > 30码 → 恢复跟 → 通知循环插件停
+    跟人走 → 距离≤10码 → 暂停 → 通知循环开始打
+    打完 → 脱战1秒或距离>30码 → 恢复 → 通知循环停
+
+【地图黑名单】
+  添加地图ID后在此地图中不触发跟随。
 
 【可能的问题】
 
-  加载不出来：
-    DalamudApiLevel 是不是 15
-    ImGui.NET.dll 有没有放一起
-    去 /xllog 看报错
-
-  跟了不走：
-    vnavmesh 装了没、开了没
-    vnavmesh 界面是不是绿色
-    看指令日志有没有 move 记录
-    去坐标页手动填坐标测 vnavmesh
-
-  紧急停止没反应：
-    热键绑上了没
-    别的插件占了同一个键";
+  加载不出来：检查ApiLevel、ImGui.NET.dll、/xllog
+  跟了不走：检查vnavmesh、看日志move记录
+  急停没反应：检查热键绑定";
 }
