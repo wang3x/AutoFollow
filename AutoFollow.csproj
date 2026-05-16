@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- 鍥芥湇鍗湀 API 15 锟?net10.0-windows -->
+    <!-- 国服卫月 API 15, net10.0-windows -->
     <TargetFramework>net10.0-windows</TargetFramework>
     <Platforms>x64</Platforms>
     <LangVersion>12</LangVersion>
@@ -9,8 +9,8 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>AutoFollow</AssemblyName>
-    <AssemblyVersion>1.4.10.0</AssemblyVersion>
-    <FileVersion>1.4.10.0</FileVersion>
+    <AssemblyVersion>1.4.11.0</AssemblyVersion>
+    <FileVersion>1.4.11.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
