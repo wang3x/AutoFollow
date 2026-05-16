@@ -1,11 +1,12 @@
 ﻿{
   "Name": "强效跟随",
   "Author": "XM.",
-  "Punchline": "vnavmesh寻路跟随，自动疾跑，与循环插件协作",
-  "Description": "基于vnavmesh的智能自动跟随插件。自动疾跑追赶，通过陌语命令与循环插件协同工作。支持自定义命令、紧急停止热键、调试日志窗口。",
+  "Punchline": "日随顶随摸鱼好帮手，跟随队友解放双手",
+  "Description": "最拟真的跟随插件，基于vnavmesh寻路，自动疾跑追赶，可与其他三方输出及躲避插件协同工作。",
   "InternalName": "AutoFollow",
-  "AssemblyVersion": "1.4.8.0",
+  "AssemblyVersion": "1.4.9.0",
   "DalamudApiLevel": 15,
   "RepoUrl": "https://github.com/wang3x/AutoFollow",
+  "IconUrl": "https://huiji-public.huijistatic.com/ff14/uploads/b/bb/Old000887.png",
   "Tags": [ "follow", "auto", "dungeon", "vnavmesh", "ipc" ]
 }
