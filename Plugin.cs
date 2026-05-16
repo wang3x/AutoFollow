@@ -319,10 +319,24 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         _ => "未知",
     };
 
-    /// <summary>通过反射安全读取 TerritoryType，避免直接访问导致 MissingMethodException</summary>
-    private static ushort? TryGetTerritory(IClientState cs)
+    /// <summary>读取当前 TerritoryType，按可靠性优先级：原生 GameMain → 反射</summary>
+    private static unsafe ushort? TryGetTerritory(IClientState cs)
     {
-        // 先尝试反射具体的运行时类型（可能比接口有更多属性）
+        // 1. GameMain 原生读取（最可靠，跟 安米儿 一样的路径）
+        var gm = FFXIVClientStructs.FFXIV.Client.Game.GameMain.Instance();
+        if (gm != null && gm->CurrentTerritoryTypeId != 0)
+            return (ushort)gm->CurrentTerritoryTypeId;
+
+        // 2. 反射 IClientState 接口
+        try
+        {
+            var prop = typeof(IClientState).GetProperty("TerritoryType");
+            if (prop != null)
+                return (ushort?)prop.GetValue(cs);
+        }
+        catch { }
+
+        // 3. 反射具体运行时类型
         try
         {
             var t = cs.GetType();
@@ -332,27 +346,6 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                 return (ushort)prop.GetValue(cs)!;
         }
         catch { }
-
-        // 再尝试反射 IClientState 接口
-        try
-        {
-            var prop = typeof(IClientState).GetProperty("TerritoryType");
-            if (prop != null)
-                return (ushort?)prop.GetValue(cs);
-        }
-        catch { }
-
-        // 原生方式：直接读 GameMain 内存（Dalamud 内部 ClientState 也是这么读的）
-        unsafe
-        {
-            try
-            {
-                var gm = FFXIVClientStructs.FFXIV.Client.Game.GameMain.Instance();
-                if (gm != null)
-                    return (ushort)gm->CurrentTerritoryTypeId;
-            }
-            catch { }
-        }
 
         return null;
     }

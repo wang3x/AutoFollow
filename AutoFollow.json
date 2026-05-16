@@ -4,7 +4,7 @@
   "Punchline": "日随顶随摸鱼好帮手，跟随队友解放双手",
   "Description": "最拟真的跟随插件，基于vnavmesh寻路，自动疾跑追赶，可与其他三方输出及躲避插件协同工作。",
   "InternalName": "AutoFollow",
-  "AssemblyVersion": "1.4.9.0",
+  "AssemblyVersion": "1.4.10.0",
   "DalamudApiLevel": 15,
   "RepoUrl": "https://github.com/wang3x/AutoFollow",
   "IconUrl": "https://huiji-public.huijistatic.com/ff14/uploads/b/bb/Old000887.png",
