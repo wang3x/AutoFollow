@@ -159,7 +159,16 @@ namespace AutoFollow;
 
         if (_config.UseMount)
         {
-            _sprint.TryMount();
+            if (_conditionManager.InCombat)
+            {
+                // 战斗中→放弃坐骑，改用疾跑
+                _sprint.TryForceSprint();
+            }
+            else
+            {
+                // 脱战→直接上坐骑
+                _sprint.TryMount();
+            }
         }
         else if (_config.SprintEnabled)
         {
@@ -225,10 +234,6 @@ namespace AutoFollow;
             _debugLog.Log("state", "Boss战中，跳过恢复");
             return;
         }
-
-        // 恢复时强制开疾跑
-        _sprint.TryForceSprint();
-        _debugLog.Log("sprint", "force sprint on resume");
 
         // 重置扫描计时器，让下一帧立即扫描坐标
         _lastUpdate = DateTime.MinValue;
