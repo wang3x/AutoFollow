@@ -10,7 +10,7 @@ public sealed class DebugLog
     private string? _lastMsg;
     private DateTime _lastTime;
 
-    public bool Enabled { get; set; } = true;
+    public bool Enabled { get; set; } = false;
 
     public IReadOnlyCollection<LogEntry> Entries => _entries.ToArray();
 

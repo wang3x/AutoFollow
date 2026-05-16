@@ -25,7 +25,7 @@ public class FollowConfig
 
     public float ScanInterval { get; set; } = 1f;
     public List<uint> BlacklistedMaps { get; set; } = new();
-    public bool ChatOutput { get; set; } = true;
+    public bool ChatOutput { get; set; } = false;
 
     public List<CustomCommandEntry> CustomCommands { get; set; } = new()
     {
