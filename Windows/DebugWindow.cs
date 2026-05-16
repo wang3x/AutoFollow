@@ -417,7 +417,10 @@ public sealed class DebugWindow
   ● 停住后怎么恢复
      距离 > 30码 → 恢复跟随，暂停循环
      脱战 > 1秒  → 恢复跟随（但距离还在10码内不恢复，防反复横跳）
-     Boss监测：目标为BattleNpc、等级>80、血量>玩家20倍 → 不恢复
+     Boss监测：扫描全场景BattleNpc，分级判断，Boss战中不恢复
+       Lv≥80 + HP>玩家20倍   → 判定为Boss
+       Lv50-79 + HP>玩家15倍 → 判定为Boss
+       Lv<50 + HP>玩家10倍   → 判定为Boss
 
   ● 每次恢复跟随时
      疾跑好了就开（或用坐骑）
@@ -437,6 +440,7 @@ public sealed class DebugWindow
 
   ● 地图黑名单
      添加地图ID后，在该地图中跟随自动暂停
+     主窗口 → 地图黑名单页 可管理
 
 【迷你窗口】
 
@@ -462,6 +466,11 @@ public sealed class DebugWindow
 
 【插件状态页】
   检测 vnavmesh / BossMod / RotationSolver 是否安装启用。
+  点击"重新检测"手动扫描。
+
+【地图黑名单页】
+  在当前地图中不想触发跟随时添加地图ID。
+  支持批量添加（逗号分隔）。
 
 【指令日志页】
   顶部分类按钮可点击过滤。
