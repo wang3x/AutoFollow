@@ -9,9 +9,8 @@ public sealed class MiniWindow
     private readonly Func<FollowState> _getState;
     private readonly Func<string?> _getTargetName;
     private readonly Func<float> _getDistance;
-    private readonly Func<bool> _getInCombat;
-    private readonly Action _stopResume;
-    private readonly Action _smartFollow;
+    private readonly Action _toggleMainWindow;
+    private readonly Action _onMainButtonClick;
 
     public bool IsOpen { get; set; } = true;
 
@@ -19,17 +18,14 @@ public sealed class MiniWindow
         Func<FollowState> getState,
         Func<string?> getTargetName,
         Func<float> getDistance,
-        Func<bool> getInCombat,
         Action toggleMainWindow,
-        Action stopResume,
-        Action smartFollow)
+        Action onMainButtonClick)
     {
         _getState = getState;
         _getTargetName = getTargetName;
         _getDistance = getDistance;
-        _getInCombat = getInCombat;
-        _stopResume = stopResume;
-        _smartFollow = smartFollow;
+        _toggleMainWindow = toggleMainWindow;
+        _onMainButtonClick = onMainButtonClick;
     }
 
     public void Draw()
@@ -39,6 +35,8 @@ public sealed class MiniWindow
         var state = _getState();
         var target = _getTargetName();
         var dist = _getDistance();
+        var isIdle = state == FollowState.Idle;
+        var isFollowing = state is FollowState.Following or FollowState.CatchingUp;
         var isPaused = state is FollowState.Combat or FollowState.Paused or FollowState.EmergencyStopped or FollowState.TargetLost;
         var distStr = dist > 150f ? "--" : dist < 100f ? $"{dist:F2}" : $"{dist:F1}";
 
@@ -48,43 +46,54 @@ public sealed class MiniWindow
         { IsOpen = open; ImGui.End(); return; }
         IsOpen = open;
 
-        // 红绿灯指示圈 + 目标 + 距离 + 两个按钮 同一排对齐
-        var stateColor = state is FollowState.EmergencyStopped ? new Vector4(1, 0.2f, 0.2f, 1)
-            : isPaused ? new Vector4(1, 0.8f, 0, 1)
-            : new Vector4(0.3f, 0.9f, 0.3f, 1);
+        // 右键单击打开主窗口
+        if (ImGui.IsWindowHovered(ImGuiHoveredFlags.None) && ImGui.IsMouseClicked(ImGuiMouseButton.Right))
+            _toggleMainWindow();
+
+        // 指示圈颜色：灰(空闲) / 绿(跟随中) / 黄(暂停)
+        var stateColor = isIdle ? new Vector4(0.45f, 0.45f, 0.45f, 1)
+            : isPaused ? new Vector4(0.9f, 0.7f, 0.2f, 1)
+            : new Vector4(0.35f, 0.75f, 0.35f, 1);
 
         var dl = ImGui.GetWindowDrawList();
         var pos = ImGui.GetCursorScreenPos();
         var fh = ImGui.GetFrameHeight();
         var halfFh = fh * 0.5f;
 
-        // 指示圈
-        dl.AddCircleFilled(new Vector2(pos.X + halfFh, pos.Y + halfFh), halfFh - 1, ImGui.ColorConvertFloat4ToU32(stateColor));
+        // 指示圈 — 直径缩小一半，圆心不变
+        dl.AddCircleFilled(new Vector2(pos.X + halfFh, pos.Y + halfFh), (halfFh - 1) * 0.5f, ImGui.ColorConvertFloat4ToU32(stateColor));
 
         // 文字
         ImGui.SetCursorScreenPos(new Vector2(pos.X + fh + 4, pos.Y));
         ImGui.AlignTextToFramePadding();
         ImGui.TextUnformatted(target ?? "无");
         ImGui.SameLine();
-        ImGui.TextUnformatted(distStr + "码");
-        ImGui.SameLine();
+        ImGui.TextUnformatted(distStr + "y");
+        ImGui.SameLine(0, fh);
 
-        // 急停/恢复按钮
-        var stopLabel = isPaused ? "恢复" : "急停";
-        var stopColor = isPaused ? new Vector4(0.2f, 0.8f, 0.2f, 1) : new Vector4(0.8f, 0.2f, 0.2f, 1);
-        ImGui.PushStyleColor(ImGuiCol.Button, stopColor);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, stopColor * 1.2f);
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, stopColor * 0.8f);
-        if (ImGui.Button(stopLabel, new Vector2(40, 0))) _stopResume();
-        ImGui.PopStyleColor(3);
+        // 单按钮 — 三态文字与颜色
+        string btnLabel;
+        Vector4 btnColor;
+        if (isIdle)
+        {
+            btnLabel = "启动";
+            btnColor = new Vector4(0.45f, 0.45f, 0.45f, 1);
+        }
+        else if (isFollowing)
+        {
+            btnLabel = "跟随中";
+            btnColor = new Vector4(0.3f, 0.6f, 0.3f, 1);
+        }
+        else
+        {
+            btnLabel = "暂停";
+            btnColor = new Vector4(0.7f, 0.55f, 0.2f, 1);
+        }
 
-        ImGui.SameLine(0, 2);
-        var following = !isPaused && !string.IsNullOrEmpty(target);
-        var followColor = following ? new Vector4(0.2f, 0.7f, 0.2f, 1) : new Vector4(0.4f, 0.4f, 0.4f, 1);
-        ImGui.PushStyleColor(ImGuiCol.Button, followColor);
-        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, followColor * 1.2f);
-        ImGui.PushStyleColor(ImGuiCol.ButtonActive, followColor * 0.8f);
-        if (ImGui.Button("跟随", new Vector2(40, 0))) _smartFollow();
+        ImGui.PushStyleColor(ImGuiCol.Button, btnColor);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, btnColor * 1.1f);
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, btnColor * 0.9f);
+        if (ImGui.Button(btnLabel, new Vector2(60, 0))) _onMainButtonClick();
         ImGui.PopStyleColor(3);
 
         ImGui.End();

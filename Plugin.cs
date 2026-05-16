@@ -95,10 +95,8 @@ public sealed class Plugin : IDalamudPlugin
             getState: () => _followEngine?.State ?? FollowState.Idle,
             getTargetName: () => _followEngine?.TargetName,
             getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
-            getInCombat: () => _followEngine?.Conditions.InCombat ?? false,
             toggleMainWindow: () => _debugWindow.IsOpen = !_debugWindow.IsOpen,
-            stopResume: () => { if (_followEngine?.State is FollowState.Idle or FollowState.Paused or FollowState.EmergencyStopped or FollowState.TargetLost) _followEngine?.Resume(); else _followEngine?.EmergencyStop(); },
-            smartFollow: SmartFollow);
+            onMainButtonClick: MiniMainButtonAction);
 
         _pi.UiBuilder.Draw += DrawUi;
         _pi.UiBuilder.OpenMainUi += () => _miniWindow.IsOpen = !_miniWindow.IsOpen;
@@ -246,16 +244,46 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         }
     }
 
-    private void SmartFollow()
+    /// <summary>三态按钮主逻辑</summary>
+    private void MiniMainButtonAction()
+    {
+        var state = _followEngine?.State ?? FollowState.Idle;
+
+        if (state == FollowState.Idle)
+        {
+            // 灰 "启动" → 智能跟随
+            TrySmartFollow();
+        }
+        else if (state is FollowState.Following or FollowState.CatchingUp)
+        {
+            // 绿 "跟随中" → 紧急停止 → 变黄
+            _followEngine?.EmergencyStop();
+        }
+        else
+        {
+            // 黄 "暂停" → 先试智能跟随（选中的目标），失败则恢复上一个目标（需30码内）
+            if (!TrySmartFollow())
+            {
+                var dist = _followEngine?.DistanceToTarget ?? float.MaxValue;
+                if (dist <= 30f)
+                    _followEngine?.Resume();
+                else
+                    _chatGui.Print("[强效跟随] 目标距离超过30y，无法恢复跟随");
+            }
+        }
+    }
+
+    /// <summary>根据当前游戏选中目标确定跟随目标，成功返回 true</summary>
+    private bool TrySmartFollow()
     {
         unsafe
         {
             var ts = FFXIVClientStructs.FFXIV.Client.Game.Control.TargetSystem.Instance();
-            if (ts == null || ts->Target == null) { _chatGui.Print("[强效跟随] 未选中目标"); return; }
+            if (ts == null || ts->Target == null) return false;
 
             var target = ts->Target;
             var targetName = target->NameString;
-            if (string.IsNullOrEmpty(targetName)) return;
+            if (string.IsNullOrEmpty(targetName)) return false;
 
             // 选中了玩家 → 直接跟随
             var obj = _objectTable.SearchById(target->EntityId);
@@ -264,7 +292,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                 _followEngine?.SetTarget(targetName);
                 ts->Target = null;
                 _chatGui.Print($"[强效跟随] 开始跟随: {targetName}");
-                return;
+                return true;
             }
 
             // 选中了敌方NPC → 跟随这个NPC的当前目标（通常是坦克）
@@ -278,12 +306,19 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                     _followEngine?.SetTarget(enemyTarget.Name.TextValue);
                     ts->Target = null;
                     _chatGui.Print($"[强效跟随] 跟随敌方目标: {enemyTarget.Name.TextValue}");
-                    return;
+                    return true;
                 }
             }
 
-            _chatGui.Print("[强效跟随] 无法确定跟随目标");
+            return false;
         }
+    }
+
+    /// <summary>保留原公开方法，供命令系统等外部调用</summary>
+    private void SmartFollow()
+    {
+        if (!TrySmartFollow())
+            _chatGui.Print("[强效跟随] 无法确定跟随目标");
     }
 
     private void PrintStatus()
@@ -299,7 +334,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         _chatGui.Print("══════════ 强效跟随 ══════════");
         _chatGui.Print($"状态: {StateName(state)}{sprinting}");
         var distStr = dist > 150f ? "--" : dist < 100f ? $"{dist:F2}" : $"{dist:F1}";
-        _chatGui.Print($"目标: {target}  距离: {distStr}码  区域: {zone}");
+        _chatGui.Print($"目标: {target}  距离: {distStr}y  区域: {zone}");
         _chatGui.Print($"模式: Vnavmesh寻路  {vnavReady}");
         _chatGui.Print($"循环插件: {loopInfo}");
         if (_followConfig.EmergencyStopKey != VirtualKey.NO_KEY)
