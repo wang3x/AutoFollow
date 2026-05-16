@@ -140,12 +140,19 @@ namespace AutoFollow;
             _debugLog.Log("state", $"暂停跟随 距离≤{_config.CombatEnterRange}y");
             _vnavmesh.Stop(); _ipc.ResumeLoop(); SetState(FollowState.Combat); return;
         }
-        // >30y 恢复跟随+暂停循环
+        // >30y 恢复跟随+暂停循环（Boss战不恢复）
         if (DistanceToTarget > _config.CombatExitRange && _state == FollowState.Combat)
         {
-            PrintMsg($"[强效跟随] 距离>{_config.CombatExitRange}y，恢复跟随");
-            _debugLog.Log("state", $"恢复跟随 距离>{_config.CombatExitRange}y");
-            ResumeFollow();
+            if (IsBossTarget())
+            {
+                _debugLog.Log("state", "Boss战距离>30y但Boss仍在，不恢复");
+            }
+            else
+            {
+                PrintMsg($"[强效跟随] 距离>{_config.CombatExitRange}y，恢复跟随");
+                _debugLog.Log("state", $"恢复跟随 距离>{_config.CombatExitRange}y");
+                ResumeFollow();
+            }
         }
 
         if (_state == FollowState.Combat) return;
@@ -182,27 +189,31 @@ namespace AutoFollow;
         SetState(FollowState.Following);
     }
 
-    /// <summary>检查目标是否是Boss级敌人</summary>
+    /// <summary>扫描周围是否有Boss级敌人</summary>
     private unsafe bool IsBossTarget()
     {
-        if (_followTargetId == null) return false;
-        var obj = _objectTable.SearchById((uint)_followTargetId.Value);
-        if (obj == null || obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc) return false;
-
-        var chara = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)obj.Address;
-        if (chara == null) return false;
-
-        // 等级 > 80
-        if (chara->Level <= 80) return false;
-
-        // 玩家血量
         var player = _objectTable[0];
         if (player == null) return false;
         var pc = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)player.Address;
         if (pc == null) return false;
+        var playerHp = pc->MaxHealth;
 
-        // 目标血量 > 玩家血量的20倍
-        return chara->MaxHealth > pc->MaxHealth * 20;
+        foreach (var obj in _objectTable)
+        {
+            if (obj == null || obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
+                continue;
+
+            var chara = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)obj.Address;
+            if (chara == null) continue;
+
+            var level = chara->Level;
+            var hp = chara->MaxHealth;
+
+            if (level >= 80 && hp > playerHp * 20) return true;
+            if (level >= 50 && level < 80 && hp > playerHp * 15) return true;
+            if (level >= 1 && level < 50 && hp > playerHp * 10) return true;
+        }
+        return false;
     }
 
     /// <summary>恢复跟随：开疾跑、立即扫描坐标、发送移动</summary>

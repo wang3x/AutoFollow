@@ -89,10 +89,7 @@ public sealed class Plugin : IDalamudPlugin
             onMoveFlag: () => _commandManager.ProcessCommand("/vnav moveflag"),
             onFlyFlag: () => { _commandManager.ProcessCommand("/mount"); _commandManager.ProcessCommand("/vnav flyflag"); },
             onStop: () => _commandManager.ProcessCommand("/vnav stop"),
-            getTerritory: () => {
-                try { var prop = typeof(IClientState).GetProperty("TerritoryType"); if (prop == null) return null; return (ushort?)prop.GetValue(_clientState); }
-                catch { return null; }
-            });
+            getTerritory: () => TryGetTerritory(_clientState));
 
         _miniWindow = new MiniWindow(
             getState: () => _followEngine?.State ?? FollowState.Idle,
@@ -124,20 +121,11 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
 
         _vnavmesh = new VnavmeshFollow(_ipc.Vnavmesh);
 
-        // 反射读取 TerritoryType（API 15 可能不存在）
-        var terrProp = typeof(IClientState).GetProperty("TerritoryType");
-        Func<ushort?> getTerr = () =>
-        {
-            if (terrProp == null) return null;
-            try { return (ushort)terrProp.GetValue(_clientState)!; }
-            catch { return null; }
-        };
-
         _followEngine = new FollowEngine(
             _objectTable, _chatGui, _logger, _framework,
             _followConfig, _conditionManager, _sprint,
             _ipc, _vnavmesh, _debugLog,
-            getTerritory: getTerr);
+            getTerritory: () => TryGetTerritory(_clientState));
 
         // 紧急停止热键检查（每帧轻量检测）
         _framework.Update += CheckEmergencyHotkey;
@@ -330,6 +318,44 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         FollowState.EmergencyStopped => "紧急停止",
         _ => "未知",
     };
+
+    /// <summary>通过反射安全读取 TerritoryType，避免直接访问导致 MissingMethodException</summary>
+    private static ushort? TryGetTerritory(IClientState cs)
+    {
+        // 先尝试反射具体的运行时类型（可能比接口有更多属性）
+        try
+        {
+            var t = cs.GetType();
+            var prop = t.GetProperty("TerritoryType",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (prop != null && prop.PropertyType == typeof(ushort))
+                return (ushort)prop.GetValue(cs)!;
+        }
+        catch { }
+
+        // 再尝试反射 IClientState 接口
+        try
+        {
+            var prop = typeof(IClientState).GetProperty("TerritoryType");
+            if (prop != null)
+                return (ushort?)prop.GetValue(cs);
+        }
+        catch { }
+
+        // 原生方式：直接读 GameMain 内存（Dalamud 内部 ClientState 也是这么读的）
+        unsafe
+        {
+            try
+            {
+                var gm = FFXIVClientStructs.FFXIV.Client.Game.GameMain.Instance();
+                if (gm != null)
+                    return (ushort)gm->CurrentTerritoryTypeId;
+            }
+            catch { }
+        }
+
+        return null;
+    }
 
     private void DrawUi()
     {
