@@ -1,4 +1,5 @@
-﻿using Dalamud.Game.ClientState.Keys;
+﻿using System.Numerics;
+using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using AutoFollow.Commands;
@@ -96,7 +97,23 @@ public sealed class Plugin : IDalamudPlugin
             getTargetName: () => _followEngine?.TargetName,
             getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             toggleMainWindow: () => _debugWindow.IsOpen = !_debugWindow.IsOpen,
-            onMainButtonClick: MiniMainButtonAction);
+            onMainButtonClick: MiniMainButtonAction,
+            getPartyList: () => {
+                var self = _objectTable[0];
+                if (self == null) return new List<string>();
+                var selfPos = self.Position;
+                return _objectTable
+                    .Where(o => o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Player
+                        && !o.Name.TextValue.Contains("?")
+                        && !string.IsNullOrEmpty(o.Name.TextValue)
+                        && Vector3.Distance(selfPos, o.Position) <= 30f)
+                    .Select(o => o.Name.TextValue)
+                    .Distinct()
+                    .ToList();
+            },
+            onFollowPartyMember: (name) => { _followEngine?.SetTarget(name); _chatGui.Print($"[强效跟随] 跟随队伍成员: {name}"); },
+            onEmergencyStop: () => { _followEngine?.EmergencyStop(); Notify("紧急停止"); },
+            onStatusReport: PrintStatus);
 
         _pi.UiBuilder.Draw += DrawUi;
         _pi.UiBuilder.OpenMainUi += () => _miniWindow.IsOpen = !_miniWindow.IsOpen;
@@ -124,6 +141,22 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             _followConfig, _conditionManager, _sprint,
             _ipc, _vnavmesh, _debugLog,
             getTerritory: () => TryGetTerritory(_clientState));
+
+        _followEngine.OnStateChanged += (oldState, newState) =>
+        {
+            _miniWindow?.SyncBtnState(newState);
+            if (newState is FollowState.Combat or FollowState.TargetLost or FollowState.Paused or FollowState.EmergencyStopped)
+            {
+                var reason = _followEngine?.PauseReason ?? newState.ToString();
+                _miniWindow?.SetEngineStatus(reason);
+                if (newState == FollowState.TargetLost)
+                    Notify("目标丢失");
+            }
+            else if (newState == FollowState.Following)
+            {
+                _miniWindow?.SetEngineStatus(null);
+            }
+        };
 
         // 紧急停止热键检查（每帧轻量检测）
         _framework.Update += CheckEmergencyHotkey;
@@ -244,33 +277,32 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         }
     }
 
-    /// <summary>三态按钮主逻辑</summary>
-    private void MiniMainButtonAction()
+    /// <summary>三态按钮主逻辑，返回是否操作成功（成功才切换按钮状态）</summary>
+    private bool MiniMainButtonAction(MiniWindow.BtnState btnState)
     {
-        var state = _followEngine?.State ?? FollowState.Idle;
+        if (btnState == MiniWindow.BtnState.Idle)
+            return TrySmartFollow();
 
-        if (state == FollowState.Idle)
+        if (btnState == MiniWindow.BtnState.Following)
         {
-            // 灰 "启动" → 智能跟随
-            TrySmartFollow();
-        }
-        else if (state is FollowState.Following or FollowState.CatchingUp)
-        {
-            // 绿 "跟随中" → 紧急停止 → 变黄
             _followEngine?.EmergencyStop();
+            Notify("紧急停止");
+            return true;
         }
-        else
+
+        // Paused — 恢复旧目标（Resume内部处理空target/nullcase），失败则尝试智能跟随
+        _followEngine?.Resume();
+        if (_followEngine?.State == FollowState.Following)
         {
-            // 黄 "暂停" → 先试智能跟随（选中的目标），失败则恢复上一个目标（需30码内）
-            if (!TrySmartFollow())
-            {
-                var dist = _followEngine?.DistanceToTarget ?? float.MaxValue;
-                if (dist <= 30f)
-                    _followEngine?.Resume();
-                else
-                    _chatGui.Print("[强效跟随] 目标距离超过30y，无法恢复跟随");
-            }
+            Notify("恢复跟随");
+            return true;
         }
+        // Resume 未切换状态（无旧目标）→ 尝试智能跟随
+        if (TrySmartFollow())
+            return true;
+
+        _chatGui.Print("[强效跟随] 无跟随目标，无法恢复");
+        return false;
     }
 
     /// <summary>根据当前游戏选中目标确定跟随目标，成功返回 true</summary>
@@ -321,6 +353,13 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             _chatGui.Print("[强效跟随] 无法确定跟随目标");
     }
 
+    /// <summary>简洁的聊天通知（仅在 ChatOutput 关闭时仍输出关键信息）</summary>
+    private void Notify(string msg)
+    {
+        _debugLog.Log("通知", msg);
+        _chatGui.Print($"[强效跟随] {msg}");
+    }
+
     private void PrintStatus()
     {
         var state = _followEngine?.State ?? FollowState.Idle;
@@ -331,7 +370,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         var sprinting = _followEngine?.Sprint.IsSprinting == true ? " [疾跑]" : "";
         var vnavReady = _vnavmesh?.IsAvailable == true ? "vnavmesh OK" : "vnavmesh 未连接";
 
-        _chatGui.Print("══════════ 强效跟随 ══════════");
+        _chatGui.Print("========== 强效跟随 ==========");
         _chatGui.Print($"状态: {StateName(state)}{sprinting}");
         var distStr = dist > 150f ? "--" : dist < 100f ? $"{dist:F2}" : $"{dist:F1}";
         _chatGui.Print($"目标: {target}  距离: {distStr}y  区域: {zone}");
@@ -339,7 +378,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         _chatGui.Print($"循环插件: {loopInfo}");
         if (_followConfig.EmergencyStopKey != VirtualKey.NO_KEY)
             _chatGui.Print($"紧急停止热键: {_followConfig.EmergencyStopKey}");
-        _chatGui.Print("══════════════════════════════");
+        _chatGui.Print("================================");
     }
 
     private static string StateName(FollowState s) => s switch

@@ -32,7 +32,9 @@ namespace AutoFollow;
     private DateTime _followStartTime;
     private bool _wasInCombat;
 
-    private const float MoveThreshold = 0.5f;
+    /// <summary>当前暂停原因的友好描述，供 UI 显示</summary>
+    public string? PauseReason { get; private set; }
+
     private const double OutOfCombatDelay = 1.0;
     private const double StartupGracePeriod = 2.0;
 
@@ -189,7 +191,7 @@ namespace AutoFollow;
         }
 
         // 目标移动超过阈值 → 立刻发新路径（vnavmesh会自动中断当前路径）
-        if (_lastSentPosition != null && Vector3.Distance(targetPos, _lastSentPosition.Value) < MoveThreshold)
+        if (_lastSentPosition != null && Vector3.Distance(targetPos, _lastSentPosition.Value) < _config.MoveThreshold)
             return;
 
         _debugLog.Log("move", $"target ({targetPos.X:F1},{targetPos.Y:F1},{targetPos.Z:F1})");
@@ -251,12 +253,13 @@ namespace AutoFollow;
         if (territory == null || _config.BlacklistedMaps.Count == 0) return false;
         if (!_config.BlacklistedMaps.Contains(territory.Value)) return false;
 
-        if (_state != FollowState.Paused)
-        {
-            PrintMsg("[强效跟随] 当前地图在黑名单中，暂停跟随");
-            _debugLog.Log("状态", $"地图{territory.Value}在黑名单中");
-            _vnavmesh.Stop(); SetState(FollowState.Paused);
-        }
+            if (_state != FollowState.Paused)
+            {
+                PrintMsg("[强效跟随] 当前地图在黑名单中，暂停跟随");
+                _debugLog.Log("状态", $"地图{territory.Value}在黑名单中");
+                PauseReason = "地图黑名单";
+                _vnavmesh.Stop(); SetState(FollowState.Paused);
+            }
         return true;
     }
 
@@ -330,6 +333,7 @@ namespace AutoFollow;
     public void Pause(string? reason = null)
     {
         _debugLog.Log("cmd", $"pause: {reason ?? ""}");
+        PauseReason = reason ?? "手动暂停";
         SetState(FollowState.Paused); _vnavmesh.Stop(); _sprint.Reset();
         _conditionManager.ManualPause(reason); _ipc.PauseLoop();
     }
@@ -346,6 +350,14 @@ namespace AutoFollow;
     {
         if (_state == newState) return;
         var old = _state; _state = newState;
+        PauseReason = _state switch
+        {
+            FollowState.Combat => "战斗中",
+            FollowState.Paused => "手动暂停",
+            FollowState.EmergencyStopped => "紧急停止",
+            FollowState.TargetLost => "目标丢失",
+            _ => null,
+        };
         OnStateChanged?.Invoke(old, newState);
         if (_state is FollowState.Idle or FollowState.Paused or FollowState.EmergencyStopped) StopUpdate();
     }

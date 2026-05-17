@@ -1,5 +1,6 @@
 using ImGuiNET;
 using AutoFollow.Models;
+using AutoFollow.Utilities;
 
 namespace AutoFollow.Windows;
 
@@ -60,14 +61,7 @@ public sealed class StatusWindow
         var paused = _getPaused();
         var loopState = _getLoopState();
 
-        var stateColor = state switch
-        {
-            FollowState.Following => new System.Numerics.Vector4(0, 1, 0, 1),
-            FollowState.CatchingUp => new System.Numerics.Vector4(1, 1, 0, 1),
-            FollowState.Combat => new System.Numerics.Vector4(1, 0, 0, 1),
-            FollowState.Paused or FollowState.TargetLost or FollowState.EmergencyStopped => new System.Numerics.Vector4(0.5f, 0.5f, 0.5f, 1),
-            _ => new System.Numerics.Vector4(1, 1, 1, 1),
-        };
+        var stateColor = FollowColors.ForState(state);
 
         ImGui.Text("状态: ");
         ImGui.SameLine();

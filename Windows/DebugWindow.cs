@@ -252,76 +252,117 @@ public sealed class DebugWindow
 
     private void DrawSettingsTab()
     {
-        ImGui.BeginChild("##ss", new Vector2(0,0), false);
+        ImGui.BeginChild("##ss", new Vector2(0, 0), false);
+
+        // ── 距离阈值（默认打开） ──
         if (ImGui.CollapsingHeader("距离阈值", ImGuiTreeNodeFlags.DefaultOpen))
         {
-            var str = _config.CombatEnterRange.ToString("F1");
-            if (ImGui.InputText("进入战斗区(y)##ce", ref str, 16)) { float v; if (float.TryParse(str, out v)) _config.CombatEnterRange = v; }
-            str = _config.CombatExitRange.ToString("F1");
-            if (ImGui.InputText("离开战斗区(y)##cx", ref str, 16)) { float v; if (float.TryParse(str, out v)) _config.CombatExitRange = v; }
-            var scanStr = _config.ScanInterval.ToString("F1");
-            if (ImGui.InputText("坐标扫描间隔(秒)##si", ref scanStr, 16)) { float v; if (float.TryParse(scanStr, out v) && v >= 0.5f) _config.ScanInterval = v; }
-            var stStr = _config.SprintThreshold.ToString("F1");
-            if (ImGui.InputText("疾跑距离(y)##st", ref stStr, 16)) { float v; if (float.TryParse(stStr, out v)) _config.SprintThreshold = v; }
-            ImGui.TextUnformatted("说明: ≤进入战斗区暂停跟随, >离开战斗区继续跟随, 脱战1秒恢复");
-            ImGui.Spacing();
-            if (ImGui.Button("保存距离")) { _onSave(); }
-            ImGui.SameLine();
-            if (ImGui.Button("恢复默认"))
+            if (ImGui.BeginTable("##dist", 2, ImGuiTableFlags.SizingStretchProp))
             {
-                _config.CombatEnterRange = 10f;
-                _config.CombatExitRange = 30f;
-                _config.SprintThreshold = 20f;
-                _config.ScanInterval = 1f;
-                _onSave();
+                ImGui.TableSetupColumn("label", ImGuiTableColumnFlags.WidthStretch);
+                ImGui.TableSetupColumn("val", ImGuiTableColumnFlags.WidthFixed, 140);
+
+                DrawDragRow("进入战斗区 (y)", _config.CombatEnterRange, 0.5f, 0f, 50f,
+                    v => _config.CombatEnterRange = v,
+                    "与目标距离 ≤ 此值时暂停跟随，恢复循环插件");
+                DrawDragRow("离开战斗区 (y)", _config.CombatExitRange, 0.5f, 0f, 200f,
+                    v => _config.CombatExitRange = v,
+                    "与目标距离 > 此值时恢复跟随，暂停循环插件");
+                DrawDragRow("扫描间隔 (秒)", _config.ScanInterval, 0.1f, 0.5f, 5f,
+                    v => _config.ScanInterval = v,
+                    "每 N 秒检测一次目标坐标，越小响应越快但 CPU 略高");
+                DrawDragRow("疾跑触发 (y)", _config.SprintThreshold, 0.5f, 0f, 100f,
+                    v => _config.SprintThreshold = v,
+                    "目标距离超过此值时自动开启疾跑");
+                DrawDragRow("移动阈值 (y)", _config.MoveThreshold, 0.05f, 0.1f, 5f,
+                    v => _config.MoveThreshold = v,
+                    "目标移动超过此距离才发送新路径，降低可减少跟随延迟");
+
+                ImGui.EndTable();
             }
+
+            ImGui.Separator();
+            if (ImGui.Button("恢复默认")) { ResetDistanceDefaults(); _onSave(); }
         }
-        if (ImGui.CollapsingHeader("疾跑设置", ImGuiTreeNodeFlags.DefaultOpen))
+
+        // ── 疾跑/坐骑（默认关闭） ──
+        if (ImGui.CollapsingHeader("疾跑 / 坐骑"))
         {
             var spr = _config.SprintEnabled;
-            if (ImGui.Checkbox("启用疾跑##s1", ref spr))
-            {
-                _config.SprintEnabled = spr;
-                if (spr) _config.UseMount = false;
-            }
+            if (ImGui.Checkbox("启用疾跑##sprintEnabled", ref spr))
+            { _config.SprintEnabled = spr; if (spr) _config.UseMount = false; }
             var mount = _config.UseMount;
-            if (ImGui.Checkbox("使用坐骑##s2", ref mount))
-            {
-                _config.UseMount = mount;
-                if (mount) _config.SprintEnabled = false;
-            }
+            if (ImGui.Checkbox("使用坐骑##useMount", ref mount))
+            { _config.UseMount = mount; if (mount) _config.SprintEnabled = false; }
             if (_config.SprintEnabled)
             {
                 var ao = _config.SprintAlwaysOn;
-                if (ImGui.Checkbox("无脑疾跑##s4", ref ao)) _config.SprintAlwaysOn = ao;
+                if (ImGui.Checkbox("无脑疾跑##sprintAlwaysOn", ref ao)) _config.SprintAlwaysOn = ao;
                 if (!ao)
                 {
                     var v = _config.SprintOnlyInCombat;
-                    if (ImGui.Checkbox("仅战斗疾跑##s3", ref v)) _config.SprintOnlyInCombat = v;
-                    ImGui.TextUnformatted("距离>疾跑距离或目标疾跑时自动开");
+                    if (ImGui.Checkbox("仅战斗疾跑##sprintCombatOnly", ref v)) _config.SprintOnlyInCombat = v;
+                    ImGui.TextDisabled("距离 > 疾跑阈值或目标疾跑时自动开启");
                 }
             }
         }
-        if (ImGui.CollapsingHeader("聊天消息", ImGuiTreeNodeFlags.DefaultOpen))
+
+        // ── 聊天消息（默认关闭） ──
+        if (ImGui.CollapsingHeader("聊天消息"))
         {
             var v = _config.ChatOutput;
-            if (ImGui.Checkbox("启用聊天提示##chat", ref v)) { _config.ChatOutput = v; _onSave(); }
+            if (ImGui.Checkbox("启用聊天提示##chatOutput", ref v)) { _config.ChatOutput = v; _onSave(); }
+            ImGui.TextDisabled("关闭后关键状态变更仍会输出到指令日志");
         }
-        if (ImGui.CollapsingHeader("紧急停止热键", ImGuiTreeNodeFlags.DefaultOpen))
+
+        // ── 紧急停止热键（默认关闭） ──
+        if (ImGui.CollapsingHeader("紧急停止热键"))
         {
             var ki = (int)_config.EmergencyStopKey;
-            DrawHotkeySelector("热键##ek", ref ki, (vk) => _config.EmergencyStopKey = (Dalamud.Game.ClientState.Keys.VirtualKey)vk);
+            DrawHotkeySelector("热键##ek", ref ki, vk => _config.EmergencyStopKey = (Dalamud.Game.ClientState.Keys.VirtualKey)vk);
         }
-        if (ImGui.CollapsingHeader("循环插件命令", ImGuiTreeNodeFlags.DefaultOpen))
+
+        // ── 循环插件命令（默认关闭） ──
+        if (ImGui.CollapsingHeader("循环插件命令"))
         {
-            var s = _config.PauseCommand ?? "";             if (ImGui.InputText("暂停命令##pc", ref s, 128)) _config.PauseCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
-            s = _config.ResumeCommand ?? ""; if (ImGui.InputText("恢复命令##rc", ref s, 128)) _config.ResumeCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
-            ImGui.TextUnformatted("默认支持 RotationSolverReborn（/rotation off, /rotation Auto）");
-            ImGui.TextUnformatted("使用 AEAssist 时，暂停命令填写 /aestop，恢复命令留空，并打开目标选择器");
+            var s = _config.PauseCommand ?? "";
+            if (ImGui.InputText("暂停命令##pc", ref s, 128))
+                _config.PauseCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+            s = _config.ResumeCommand ?? "";
+            if (ImGui.InputText("恢复命令##rc", ref s, 128))
+                _config.ResumeCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+            ImGui.TextDisabled("默认 RotationSolverReborn: /rotation off / /rotation Auto");
+            ImGui.TextDisabled("AEAssist: 暂停 /aestop，恢复留空，并打开目标选择器");
         }
+
         ImGui.Separator();
         if (ImGui.Button("保存全部")) { _onSave(); _onCommandReload(); }
         ImGui.EndChild();
+    }
+
+    private static void DrawDragRow(string label, float value, float speed, float min, float max,
+        Action<float> onSet, string tooltip)
+    {
+        ImGui.TableNextRow();
+        ImGui.TableNextColumn();
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(label);
+        if (ImGui.IsItemHovered() && !string.IsNullOrEmpty(tooltip))
+            ImGui.SetTooltip(tooltip);
+        ImGui.TableNextColumn();
+        var v = value;
+        var id = "##dr" + label.Replace(" ", "");
+        if (ImGui.DragFloat(id, ref v, speed, min, max, "%.2f"))
+            onSet(Math.Clamp(v, min, max));
+    }
+
+    private void ResetDistanceDefaults()
+    {
+        _config.CombatEnterRange = 10f;
+        _config.CombatExitRange = 30f;
+        _config.SprintThreshold = 20f;
+        _config.ScanInterval = 0.5f;
+        _config.MoveThreshold = 0.5f;
     }
 
     private void DrawHotkeySelector(string label, ref int keyValue, Action<int> onSet)
@@ -345,8 +386,67 @@ public sealed class DebugWindow
     private void DrawHelpTab()
     {
         ImGui.BeginChild("##help", new Vector2(0, 0), false);
-        ImGui.TextUnformatted(HelpText);
+
+        if (ImGui.CollapsingHeader("快速上手", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            DrawCmd("/ftar", "选中一个队友，输入此命令即开始跟随");
+            DrawCmd("/ff", "切换跟随开/关");
+            DrawCmd("F8", "紧急停止（可在设置页改绑）");
+            DrawCmd("/fdbg", "打开设置窗口");
+            ImGui.Spacing();
+            ImGui.TextWrapped("迷你窗口默认显示在屏幕上，点击「跟随」开始，「暂停」停止，右键弹出快捷菜单。什么都不用设置，装好就能用。");
+        }
+
+        if (ImGui.CollapsingHeader("命令大全"))
+        {
+            if (ImGui.BeginTable("##cmdtable", 3,
+                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
+            {
+                ImGui.TableSetupColumn("命令", ImGuiTableColumnFlags.WidthFixed, 100);
+                ImGui.TableSetupColumn("作用", ImGuiTableColumnFlags.WidthStretch);
+                ImGui.TableSetupColumn("说明", ImGuiTableColumnFlags.WidthStretch);
+                ImGui.TableHeadersRow();
+                foreach (var c in _config.CustomCommands)
+                {
+                    ImGui.TableNextRow();
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(c.Command);
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(c.Action.ToString());
+                    ImGui.TableNextColumn(); ImGui.TextUnformatted(c.Description);
+                }
+                ImGui.EndTable();
+            }
+        }
+
+        if (ImGui.CollapsingHeader("插件自动做的事（核心机制）"))
+        {
+            ImGui.TextWrapped("跟随中目标走远 → 暂停循环插件 → vnavmesh 寻路追过去");
+            ImGui.TextWrapped("接近目标进入战斗区 → 暂停跟随，恢复循环插件 → BossMod 接管");
+            ImGui.TextWrapped("脱战 → 恢复跟随，暂停循环插件 → 继续跟人");
+            ImGui.Spacing();
+            ImGui.BulletText("进入战斗区（≤10y）停跟，离开战斗区（>30y）恢复，0.5 秒扫描一次坐标");
+            ImGui.BulletText("设置目标后 2 秒内不触发暂停（启动保护），Boss 战中不恢复跟随");
+            ImGui.BulletText("疾跑自动开（目标 > 20y 或目标在跑时），也可设无脑疾跑/仅战斗/坐骑模式");
+        }
+
+        if (ImGui.CollapsingHeader("常见问题"))
+        {
+            ImGui.BulletText("跟了不走？检查 vnavmesh 是否启用、NavMesh 是否已加载，查看指令日志");
+            ImGui.BulletText("循环不自动停？默认支持 RSR，AEAssist 请在设置页填暂停命令 /aestop，恢复留空");
+            ImGui.BulletText("换目标？/ft <新名字> 或 /ft 清除目标后重新选");
+            ImGui.BulletText("提示 >30y？暂停恢复时目标必须在 30y 内，靠近后再试");
+            ImGui.BulletText("迷你窗口不见了？卫月图标 → 插件 → 强效跟随 → 显示迷你窗口");
+        }
+
         ImGui.EndChild();
+    }
+
+    private static void DrawCmd(string cmd, string desc)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Text, new System.Numerics.Vector4(0.2f, 0.8f, 0.2f, 1));
+        ImGui.TextUnformatted("  " + cmd);
+        ImGui.PopStyleColor();
+        ImGui.SameLine();
+        ImGui.TextUnformatted(" — " + desc);
     }
 
     // ════════════ 页: 地图黑名单 ════════════
@@ -387,115 +487,5 @@ public sealed class DebugWindow
         ImGui.EndChild();
     }
 
-    private const string HelpText = @"
-【插件说明】
-FF14 卫月 (Dalamud) 自动跟随插件 — vnavmesh 寻路跟随 · 自动疾跑 · 循环插件协同 · 地图黑名单
 
-【快速开始】
-/ftar          → 跟随当前选中的玩家
-/ft <玩家名>    → 按名字跟随，如 /ft 小明
-/ff            → 切换跟随开/关
-/fdbg          → 打开/关闭主窗口
-
-选好目标后插件自动通过 vnavmesh 寻路走到目标身边。
-跟随期间会自动处理疾跑、战斗暂停、循环插件协同。
-
-【所有命令】
-/ff            ToggleFollow       切换跟随开/关
-/ftar          FollowCurrentTarget 跟随当前选中的目标
-/ft <名>       SetFollowTarget     按名字设置跟随目标
-/fes           EmergencyStop       紧急停止（停止 + 暂停循环）
-/flp           PauseLoop           暂停循环插件
-/flr           ResumeLoop          恢复循环插件
-/flt           ToggleLoop          切换循环插件
-/fst           StatusReport        输出状态报告到聊天
-/fdbg          ToggleDebugWindow   打开/关闭主窗口
-
-支持自定义命令：主窗口 → 设置页 → 自定义命令面板可增删改。
-
-【跟随机制 · 距离状态机】
-每 1 秒扫描一次目标坐标（扫描间隔可调），检测到移动超过 0.5y 即发送新路径给 vnavmesh。
-
-进入战斗区（默认 ≤10y） → 暂停跟随，恢复循环插件 → BossMod 接管
-离开战斗区（默认 >30y） → 恢复跟随，暂停循环插件
-脱战后 >1秒              → 恢复跟随（距目标≤10y时不恢复，防反复横跳）
-
-● 启动保护期：设置目标后 2 秒内不触发暂停，防止一出门就停
-● Boss 监测：扫描全场景 BattleNpc，分级判断，Boss 战中不恢复跟随
-  Lv≥80 + HP>玩家20倍 / Lv50-79 + HP>玩家15倍 / Lv<50 + HP>玩家10倍
-
-【自动疾跑】
-疾跑和坐骑二选一互斥，通过设置页切换。
-● 智能疾跑（默认）：目标>20y 或目标正在疾跑时自动开
-● 无脑疾跑：一直开着疾跑
-● 仅战斗疾跑：仅在战斗状态中开疾跑
-● 坐骑模式：脱战→上坐骑；战斗中→放弃坐骑改用疾跑
-
-【智能跟随】
-迷你窗口单按钮三态切换：
-  启动（灰色）   → 智能跟随：选中的玩家直接跟；选中的敌方 NPC 则跟随其当前目标
-  跟随中（绿色） → 紧急停止（跟随 + 循环插件暂停），变为暂停
-  暂停（黄色）   → 先尝试智能跟随（看当前选中的目标），失败则恢复上一个跟随目标（需在 30y 内）
-
-● 暂停恢复时若目标距离超过 30y，提示""目标距离超过30y""并阻止恢复
-● 目标栏位为空时无法启动跟随
-
-【紧急停止】
-默认热键 F8 按一次即触发。可在设置页改绑其他按键。
-触发后：停止跟随 + 暂停循环插件。需点击暂停按钮或 /ff 恢复。
-
-【地图黑名单】
-设置页 → 地图黑名单页，可查看当前地图 ID 并添加。
-在黑名单地图中自动暂停跟随，支持批量添加（逗号分隔）。
-
-【主窗口 · 标签页】
-设置      距离阈值、疾跑/坐骑、热键绑定、循环插件命令
-坐标      玩家/目标坐标、步行至flag坐标、飞行至flag坐标、手动输入坐标移动
-插件状态  检测 vnavmesh / BossMod / RotationSolver 是否安装启用
-使用说明  本说明的游戏内版本
-地图黑名单 查看当前地图 ID，添加/删除黑名单
-指令日志  颜色分类的操作日志，支持过滤和复制
-
-【坐标分页】
-● 显示玩家坐标和跟随目标坐标
-● 步行至flag坐标 — 通过 vnavmesh 寻路走到小旗位置
-● 飞行至flag坐标 — 上坐骑后起飞到小旗位置（需先上坐骑再点击）
-● 手动移动 — 输入 X/Y/Z 坐标直接移动
-
-【迷你窗口】
-默认打开，右键单击切换主窗口显示。界面元素：
-● 指示圈：灰=空闲、绿=跟随中、黄=暂停（直径缩小，颜色柔和）
-● 目标名 + 距离(y)
-● 单按钮：[启动] / [跟随中] / [暂停] 三态切换
-
-【设置项一览】
-距离阈值：进入战斗区 10y / 离开战斗区 30y / 疾跑触发 20y / 扫描间隔 1秒
-疾跑：启用智能 / 无脑 / 仅战斗 / 使用坐骑
-聊天：启用聊天提示（默认关闭）
-热键：紧急停止 F8
-循环插件：暂停 /rotation off / 恢复 /rotation Auto
-行为：战斗中暂停 / 目标丢失暂停 / 死亡暂停（全部开启）
-指令日志：启用日志（默认关闭）
-
-【循环插件协同】
-在设置页填写循环插件的暂停/恢复命令。
-
-RotationSolverReborn（默认）：/rotation off / /rotation Auto
-AEAssist：暂停填写 /aestop，恢复命令留空，并打开目标选择器
-
-工作流程：
-跟人走远 → 暂停循环插件 → vnavmesh 寻路绕障碍追过去
-接近进入战斗区 → 暂停跟随，恢复循环插件 → BossMod 接管战斗
-脱战 → 恢复跟随，暂停循环插件 → 继续追目标
-
-不配置命令不影响跟随，仅不自动发送插件控制命令。
-
-【可能的问题】
-加载不出来：检查 AutoFollow.json 和 AutoFollow.dll 是否在同一目录，ApiLevel 是否匹配（国服 API 15），/xllog 查看错误
-跟了不走：检查 vnavmesh 是否已安装启用、NavMesh 是否加载，查看指令日志
-循环不自动暂停/恢复：检查设置页循环插件命令是否正确。AEAssist 请填 /aestop
-换目标：/ft <新玩家名> 或 /ft 清除目标，/ftar 重新选
-急停没反应：检查热键是否被绑定或被其他插件占用（按下即触发，无需长按）
-提示""目标距离超过30y""：暂停状态恢复时目标必须在 30y 内，靠近后再试
-地图黑名单读不到ID：v1.4.10 优化了读取优先级，仍不行尝试重启游戏";
 }
