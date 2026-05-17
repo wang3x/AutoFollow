@@ -291,7 +291,10 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             return true;
         }
 
-        // Paused — 旧目标≤30y则恢复，否则重新选目标
+        // Paused — 优先智能跟随（用户可能选了新目标），失败则恢复旧目标
+        if (TrySmartFollow())
+            return true;
+
         if (_followEngine != null)
         {
             var hasTarget = !string.IsNullOrEmpty(_followEngine.TargetName);
@@ -306,12 +309,9 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             }
             else if (hasTarget)
             {
-                _chatGui.Print("[强效跟随] 旧目标超过30y，重新选择目标");
+                _chatGui.Print("[强效跟随] 旧目标超过30y，无法恢复");
             }
         }
-        // 无目标/距离过远 → 重新选目标
-        if (TrySmartFollow())
-            return true;
 
         _chatGui.Print("[强效跟随] 无跟随目标，无法恢复");
         return false;
