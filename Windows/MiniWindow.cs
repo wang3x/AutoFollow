@@ -10,6 +10,7 @@ public sealed class MiniWindow
     /// <summary>按钮独立状态机，不随引擎状态自动变化</summary>
     public enum BtnState { Idle, Following, Paused }
 
+    private readonly FollowConfig _config;
     private readonly Func<FollowState> _getState;
     private readonly Func<string?> _getTargetName;
     private readonly Func<float> _getDistance;
@@ -25,6 +26,7 @@ public sealed class MiniWindow
     public bool IsOpen { get; set; } = true;
 
     public MiniWindow(
+        FollowConfig config,
         Func<FollowState> getState,
         Func<string?> getTargetName,
         Func<float> getDistance,
@@ -35,6 +37,7 @@ public sealed class MiniWindow
         Action onEmergencyStop,
         Action onStatusReport)
     {
+        _config = config;
         _getState = getState;
         _getTargetName = getTargetName;
         _getDistance = getDistance;
@@ -194,10 +197,10 @@ public sealed class MiniWindow
         // ════════════════════════════════════════
         var (btnLabel, btnColor) = _btnState switch
         {
-            BtnState.Idle      => ("跟随",  FollowColors.Idle),
-            BtnState.Following => ("暂停",  FollowColors.Following),
-            BtnState.Paused    => ("继续",  FollowColors.Paused),
-            _                  => ("跟随",  FollowColors.Idle),
+            BtnState.Idle      => ("跟随",  _config.BtnColorIdle),
+            BtnState.Following => ("暂停",  _config.BtnColorFollowing),
+            BtnState.Paused    => ("继续",  _config.BtnColorPaused),
+            _                  => ("跟随",  _config.BtnColorIdle),
         };
 
         ImGui.PushStyleColor(ImGuiCol.Button, btnColor);

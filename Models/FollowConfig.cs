@@ -1,3 +1,4 @@
+using System.Numerics;
 using Dalamud.Game.ClientState.Keys;
 using AutoFollow.Commands;
 
@@ -6,6 +7,10 @@ namespace AutoFollow.Models;
 [Serializable]
 public class FollowConfig
 {
+    // ── Mini 窗口按钮颜色（可自定义） ──
+    public Vector4 BtnColorIdle      { get; set; } = new(0.45f, 0.45f, 0.45f, 1f); // 灰
+    public Vector4 BtnColorFollowing { get; set; } = new(0.20f, 0.80f, 0.30f, 1f); // 绿
+    public Vector4 BtnColorPaused    { get; set; } = new(1.00f, 0.70f, 0.10f, 1f); // 琥珀
     public float CombatEnterRange { get; set; } = 10f;
     public float CombatExitRange { get; set; } = 30f;
     public bool SprintEnabled { get; set; } = true;

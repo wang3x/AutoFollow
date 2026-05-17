@@ -335,6 +335,33 @@ public sealed class DebugWindow
             ImGui.TextDisabled("AEAssist: 暂停 /aestop，恢复留空，并打开目标选择器");
         }
 
+        // ── Mini 窗口按钮颜色（默认关闭） ──
+        if (ImGui.CollapsingHeader("Mini 窗口按钮颜色"))
+        {
+            ImGui.TextDisabled("自定义三个状态的按钮底色，即时生效无需保存");
+
+            var c1 = _config.BtnColorIdle;
+            if (ImGui.ColorEdit4("空闲 (跟随)", ref c1, ImGuiColorEditFlags.AlphaPreview))
+                _config.BtnColorIdle = c1;
+
+            var c2 = _config.BtnColorFollowing;
+            if (ImGui.ColorEdit4("跟随中 (暂停)", ref c2, ImGuiColorEditFlags.AlphaPreview))
+                _config.BtnColorFollowing = c2;
+
+            var c3 = _config.BtnColorPaused;
+            if (ImGui.ColorEdit4("暂停 (继续)", ref c3, ImGuiColorEditFlags.AlphaPreview))
+                _config.BtnColorPaused = c3;
+
+            if (ImGui.Button("恢复默认颜色"))
+            {
+                _config.BtnColorIdle = new System.Numerics.Vector4(0.45f, 0.45f, 0.45f, 1f);
+                _config.BtnColorFollowing = new System.Numerics.Vector4(0.20f, 0.80f, 0.30f, 1f);
+                _config.BtnColorPaused = new System.Numerics.Vector4(1.00f, 0.70f, 0.10f, 1f);
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("保存颜色")) { _onSave(); }
+        }
+
         ImGui.Separator();
         if (ImGui.Button("保存全部")) { _onSave(); _onCommandReload(); }
         ImGui.EndChild();

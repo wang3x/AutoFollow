@@ -93,6 +93,7 @@ public sealed class Plugin : IDalamudPlugin
             getTerritory: () => TryGetTerritory(_clientState));
 
         _miniWindow = new MiniWindow(
+            _followConfig,
             getState: () => _followEngine?.State ?? FollowState.Idle,
             getTargetName: () => _followEngine?.TargetName,
             getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
