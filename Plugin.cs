@@ -290,14 +290,25 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             return true;
         }
 
-        // Paused — 恢复旧目标（Resume内部处理空target/nullcase），失败则尝试智能跟随
-        _followEngine?.Resume();
-        if (_followEngine?.State == FollowState.Following)
+        // Paused — 旧目标≤30y则恢复，否则重新选目标
+        if (_followEngine != null)
         {
-            Notify("恢复跟随");
-            return true;
+            var hasTarget = !string.IsNullOrEmpty(_followEngine.TargetName);
+            if (hasTarget && _followEngine.DistanceToTarget <= 30f)
+            {
+                _followEngine.Resume();
+                if (_followEngine.State == FollowState.Following)
+                {
+                    Notify("恢复跟随");
+                    return true;
+                }
+            }
+            else if (hasTarget)
+            {
+                _chatGui.Print("[强效跟随] 旧目标超过30y，重新选择目标");
+            }
         }
-        // Resume 未切换状态（无旧目标）→ 尝试智能跟随
+        // 无目标/距离过远 → 重新选目标
         if (TrySmartFollow())
             return true;
 

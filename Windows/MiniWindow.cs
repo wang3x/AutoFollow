@@ -87,10 +87,15 @@ public sealed class MiniWindow
 
         if (ImGui.BeginPopup("##miniCtx"))
         {
+            ImGui.PushStyleColor(ImGuiCol.Text, FollowColors.TextPrimary);
             if (ImGui.MenuItem("打开主窗口")) _toggleMainWindow();
+            ImGui.PopStyleColor();
+
+            ImGui.PushStyleColor(ImGuiCol.Text, FollowColors.TextAccent);
             if (ImGui.MenuItem("状态报告")) _onStatusReport();
             ImGui.Separator();
             if (ImGui.MenuItem("紧急停止")) _onEmergencyStop();
+            ImGui.PopStyleColor();
             ImGui.Separator();
             var party = _getPartyList();
             if (party.Count > 0)
@@ -100,6 +105,10 @@ public sealed class MiniWindow
                 foreach (var m in party)
                     if (ImGui.MenuItem(m)) _onFollowPartyMember(m);
             }
+            ImGui.Separator();
+            ImGui.PushStyleColor(ImGuiCol.Text, FollowColors.TextAccent);
+            if (ImGui.MenuItem("关闭窗口")) IsOpen = false;
+            ImGui.PopStyleColor();
             ImGui.EndPopup();
         }
 
@@ -227,20 +236,6 @@ public sealed class MiniWindow
                 if (dx != 0 || dy != 0)
                     dl.AddText(txtPos + new Vector2(dx, dy), outlineCol, btnLabel);
         dl.AddText(txtPos, txtCol, btnLabel);
-
-        // ════════════════════════════════════════
-        //  右键提示 ··· + 关闭 X
-        // ════════════════════════════════════════
-        ImGui.SameLine(0, 2);
-        ImGui.PushStyleColor(ImGuiCol.Text, FollowColors.TextMuted);
-        ImGui.TextUnformatted("···");
-
-        ImGui.SameLine(0, 2);
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(2, 1));
-        if (ImGui.Button("X", new Vector2(18, fh)))
-            IsOpen = false;
-        ImGui.PopStyleVar();
-        ImGui.PopStyleColor();
 
         ImGui.End();
     }
