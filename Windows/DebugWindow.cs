@@ -268,15 +268,15 @@ public sealed class DebugWindow
                 DrawDragRow("离开战斗区 (y)", _config.CombatExitRange, 0.5f, 0f, 200f,
                     v => _config.CombatExitRange = v,
                     "与目标距离 > 此值时恢复跟随，暂停循环插件");
-                DrawDragRow("扫描间隔 (秒)", _config.ScanInterval, 0.1f, 0.5f, 5f,
+                DrawDragRow("扫描间隔 (秒)", _config.ScanInterval, 0.1f, 0.5f, 10f,
                     v => _config.ScanInterval = v,
-                    "每 N 秒检测一次目标坐标，越小响应越快但 CPU 略高");
+                    "每 N 秒检测一次目标坐标，越大更新越少停顿越少");
                 DrawDragRow("疾跑触发 (y)", _config.SprintThreshold, 0.5f, 0f, 100f,
                     v => _config.SprintThreshold = v,
                     "目标距离超过此值时自动开启疾跑");
-                DrawDragRow("移动阈值 (y)", _config.MoveThreshold, 0.05f, 0.1f, 5f,
+                DrawDragRow("移动阈值 (y)", _config.MoveThreshold, 0.5f, 0.5f, 20f,
                     v => _config.MoveThreshold = v,
-                    "目标移动超过此距离才发送新路径，降低可减少跟随延迟");
+                    "目标移动超过此距离才发新路径，越大停顿越少精度越低");
 
                 ImGui.EndTable();
             }
@@ -387,9 +387,9 @@ public sealed class DebugWindow
     {
         _config.CombatEnterRange = 10f;
         _config.CombatExitRange = 30f;
+        _config.ScanInterval = 2f;
         _config.SprintThreshold = 20f;
-        _config.ScanInterval = 0.5f;
-        _config.MoveThreshold = 0.5f;
+        _config.MoveThreshold = 5f;
     }
 
     private void DrawHotkeySelector(string label, ref int keyValue, Action<int> onSet)
@@ -422,26 +422,6 @@ public sealed class DebugWindow
             DrawCmd("/fdbg", "打开设置窗口");
             ImGui.Spacing();
             ImGui.TextWrapped("迷你窗口默认显示在屏幕上，点击「跟随」开始，「暂停」停止，右键弹出快捷菜单。什么都不用设置，装好就能用。");
-        }
-
-        if (ImGui.CollapsingHeader("命令大全"))
-        {
-            if (ImGui.BeginTable("##cmdtable", 3,
-                ImGuiTableFlags.Borders | ImGuiTableFlags.RowBg | ImGuiTableFlags.SizingStretchProp))
-            {
-                ImGui.TableSetupColumn("命令", ImGuiTableColumnFlags.WidthFixed, 100);
-                ImGui.TableSetupColumn("作用", ImGuiTableColumnFlags.WidthStretch);
-                ImGui.TableSetupColumn("说明", ImGuiTableColumnFlags.WidthStretch);
-                ImGui.TableHeadersRow();
-                foreach (var c in _config.CustomCommands)
-                {
-                    ImGui.TableNextRow();
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(c.Command);
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(c.Action.ToString());
-                    ImGui.TableNextColumn(); ImGui.TextUnformatted(c.Description);
-                }
-                ImGui.EndTable();
-            }
         }
 
         if (ImGui.CollapsingHeader("插件自动做的事（核心机制）"))

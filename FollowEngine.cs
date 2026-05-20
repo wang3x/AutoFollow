@@ -190,6 +190,13 @@ namespace AutoFollow;
             }
         }
 
+        // 距离≤5y → 停止移动（不贴脸）
+        if (DistanceToTarget <= 5f)
+        {
+            if (_vnavmesh.IsMoving) _vnavmesh.Stop();
+            return;
+        }
+
         // 目标移动超过阈值 → 立刻发新路径（vnavmesh会自动中断当前路径）
         if (_lastSentPosition != null && Vector3.Distance(targetPos, _lastSentPosition.Value) < _config.MoveThreshold)
             return;

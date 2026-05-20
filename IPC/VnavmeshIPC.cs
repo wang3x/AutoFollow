@@ -24,6 +24,7 @@ public sealed class VnavmeshIPC : IDisposable
 
     private bool _connectionAttempted;
     private bool _isAvailable;
+    private int _pathfindVersion;
 
     public bool IsAvailable
     {
@@ -62,12 +63,13 @@ public sealed class VnavmeshIPC : IDisposable
         }
     }
 
-    /// <summary>后台寻路+移动</summary>
+    /// <summary>后台寻路+移动（带版本号防重叠，只应用最新结果）</summary>
     public void MoveToPositionAsync(Vector3 from, Vector3 destination)
     {
         if (!IsAvailable) { _debugLog.Log("IPC", "vnavmesh unavailable"); return; }
 
-        _debugLog.Log("IPC", $"pathfind ({from.X:F1},{from.Y:F1},{from.Z:F1}) -> ({destination.X:F1},{destination.Y:F1},{destination.Z:F1})");
+        var version = Interlocked.Increment(ref _pathfindVersion);
+        _debugLog.Log("IPC", $"pathfind v{version} ({from.X:F1},{from.Y:F1},{from.Z:F1}) -> ({destination.X:F1},{destination.Y:F1},{destination.Z:F1})");
 
         Task.Run(async () =>
         {
@@ -78,6 +80,12 @@ public sealed class VnavmeshIPC : IDisposable
                 if (path == null || path.Count == 0)
                 {
                     _debugLog.Log("move", "no path found");
+                    return;
+                }
+                // 如果在此期间有更新的版本，丢弃当前结果防重叠
+                if (version != _pathfindVersion)
+                {
+                    _debugLog.Log("move", $"skip stale path (v{version} != v{_pathfindVersion})");
                     return;
                 }
                 _debugLog.Log("move", $"path found ({path.Count} nodes)");
