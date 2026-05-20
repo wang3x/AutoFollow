@@ -79,6 +79,21 @@ namespace AutoFollow;
         if (_state is FollowState.Idle or FollowState.Paused or FollowState.EmergencyStopped)
             return;
 
+        // 每帧距离检查 — 距离≤5y停止移动（独立于扫描间隔，防贴脸）
+        if (_state is FollowState.Following or FollowState.CatchingUp)
+        {
+            var p = _objectTable[0];
+            var t = ResolveTarget();
+            if (p != null && t != null && Vector3.Distance(p.Position, t.Position) <= 5f)
+            {
+                if (_vnavmesh.IsMoving) _vnavmesh.Stop();
+                // 进入战斗状态，恢复循环插件攻击（与 CombatEnterRange 检测相同职责）
+                _ipc.ResumeLoop();
+                SetState(FollowState.Combat);
+                return;
+            }
+        }
+
         // 地图黑名单检测
         if (CheckBlacklistedMap()) return;
 
