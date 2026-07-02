@@ -235,7 +235,7 @@ public sealed class DebugWindow
         ImGui.SameLine();
         if (ImGui.Button("停止移动"))
             _onStop();
-        ImGui.TextUnformatted("《飞行至flag坐标功能需要在坐骑上点击才有效果》");
+        ImGui.TextUnformatted("《飞行至flag坐标会自动上坐骑，跨区自动传送》");
 
         ImGui.Spacing();
         ImGui.TextUnformatted("--- 手动移动 ---");
@@ -442,6 +442,16 @@ public sealed class DebugWindow
             ImGui.BulletText("换目标？/ft <新名字> 或 /ft 清除目标后重新选");
             ImGui.BulletText("提示 >30y？暂停恢复时目标必须在 30y 内，靠近后再试");
             ImGui.BulletText("迷你窗口不见了？卫月图标 → 插件 → 强效跟随 → 显示迷你窗口");
+        }
+
+        if (ImGui.CollapsingHeader("旗标操作（MiniWindow 折叠区）"))
+        {
+            ImGui.TextWrapped("MiniWindow 默认折叠，展开后显示旗标坐标和三个按钮：");
+            ImGui.BulletText("步行至flag — 地面寻路走到旗标位置");
+            ImGui.BulletText("飞行至flag — 自动上坐骑（陆行鸟）后飞行到旗标，上坐骑失败自动改步行");
+            ImGui.BulletText("停止移动 — 停止 vnavmesh 移动");
+            ImGui.Spacing();
+            ImGui.TextWrapped("📡 跨区域自动传送：如果旗标在当前区域以外，插件会自动找到最近的水晶传送过去，到达后上坐骑飞往旗标。");
         }
 
         ImGui.EndChild();

@@ -20,8 +20,14 @@ public sealed class MiniWindow
     private readonly Action<string> _onFollowPartyMember;
     private readonly Action _onEmergencyStop;
     private readonly Action _onStatusReport;
+    private readonly Func<Vector3?> _getPlayerPos;
+    private readonly Func<Vector3?> _getFlagPos;
+    private readonly Action _onMoveFlag;
+    private readonly Action _onFlyFlag;
+    private readonly Action _onStop;
     private BtnState _btnState = BtnState.Idle;
     private string? _engineStatus;
+    private bool _flagExpanded;
 
     public bool IsOpen { get; set; } = true;
 
@@ -35,7 +41,12 @@ public sealed class MiniWindow
         Func<IReadOnlyList<string>> getPartyList,
         Action<string> onFollowPartyMember,
         Action onEmergencyStop,
-        Action onStatusReport)
+        Action onStatusReport,
+        Func<Vector3?> getPlayerPos,
+        Func<Vector3?> getFlagPos,
+        Action onMoveFlag,
+        Action onFlyFlag,
+        Action onStop)
     {
         _config = config;
         _getState = getState;
@@ -47,6 +58,11 @@ public sealed class MiniWindow
         _onFollowPartyMember = onFollowPartyMember;
         _onEmergencyStop = onEmergencyStop;
         _onStatusReport = onStatusReport;
+        _getPlayerPos = getPlayerPos;
+        _getFlagPos = getFlagPos;
+        _onMoveFlag = onMoveFlag;
+        _onFlyFlag = onFlyFlag;
+        _onStop = onStop;
     }
 
     /// <summary>由外部设置引擎状态描述（如"战斗中""目标丢失"），null 清除</summary>
@@ -240,6 +256,89 @@ public sealed class MiniWindow
                     dl.AddText(txtPos + new Vector2(dx, dy), outlineCol, btnLabel);
         dl.AddText(txtPos, txtCol, btnLabel);
 
+        // ════════════════════════════════════════
+        //  折叠按钮 [▼]/[▲] — 在主按钮右侧
+        // ════════════════════════════════════════
+        ImGui.SameLine(0, 19);
+        var foldLabel = _flagExpanded ? "▲" : "▼";
+        if (ImGui.Button(foldLabel, new Vector2(24, 0)))
+            _flagExpanded = !_flagExpanded;
+
+        // ════════════════════════════════════════
+        //  折叠内容：旗标操作区
+        // ════════════════════════════════════════
+        if (_flagExpanded)
+        {
+            var playerPos = _getPlayerPos();
+            var flagPos = _getFlagPos();
+            var flagValid = flagPos != null;
+
+            // ── 分隔线 ──
+            var availW = ImGui.GetContentRegionAvail().X;
+            var sepY = pos.Y + fh + 2;
+            dl.AddLine(new Vector2(pos.X + 2, sepY), new Vector2(pos.X + availW - 2, sepY),
+                ImGui.ColorConvertFloat4ToU32(new Vector4(1, 1, 1, 0.12f)), 1f);
+
+            // ── 玩家坐标 ──
+            ImGui.SetCursorScreenPos(new Vector2(pos.X + 4, sepY + 4));
+            ImGui.PushStyleColor(ImGuiCol.Text, FollowColors.TextPrimary);
+            ImGui.TextUnformatted("玩家: " + (playerPos != null
+                ? $"{playerPos.Value.X:F1}, {playerPos.Value.Y:F1}, {playerPos.Value.Z:F1}"
+                : "---"));
+            ImGui.PopStyleColor();
+
+            // ── 旗标坐标 ──
+            var flagY = sepY + 4 + fh;
+            ImGui.SetCursorScreenPos(new Vector2(pos.X + 4, flagY));
+            ImGui.PushStyleColor(ImGuiCol.Text, flagValid ? FollowColors.TextAccent : FollowColors.TextMuted);
+            ImGui.TextUnformatted("旗标: " + (flagValid
+                ? $"X: {flagPos!.Value.X:F1}  Z: {flagPos!.Value.Z:F1}"
+                : "未设置"));
+            ImGui.PopStyleColor();
+
+            // ── 三个按钮 ──
+            var btnY = flagY + fh + 2;
+            ImGui.SetCursorScreenPos(new Vector2(pos.X + 4, btnY));
+            var fullW = availW - 8;
+            var btnW = (fullW - 4f) / 3f;
+
+            FlagButton(dl, "步行至flag", btnW, fh, FollowColors.Paused, _onMoveFlag);
+            ImGui.SameLine(0, 2);
+            FlagButton(dl, "飞行至flag", btnW, fh, FollowColors.Following, _onFlyFlag);
+            // 自动上坐骑逻辑在 Plugin.cs onFlyFlag 回调中处理
+            ImGui.SameLine(0, 2);
+            FlagButton(dl, "停止移动", btnW, fh, FollowColors.Emergency, _onStop);
+
+            // 占用空间以便 AutoResize 正确计算
+            ImGui.SetCursorScreenPos(new Vector2(pos.X + 4, btnY + fh));
+            ImGui.Dummy(new Vector2(1, 1));
+        }
+
         ImGui.End();
+    }
+
+    private static void FlagButton(ImDrawListPtr dl, string label, float w, float fh,
+        Vector4 color, Action onClick)
+    {
+        ImGui.PushStyleColor(ImGuiCol.Button, color);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, color * 1.15f);
+        ImGui.PushStyleColor(ImGuiCol.ButtonActive, color * 0.85f);
+        if (ImGui.Button(label, new Vector2(w, fh)))
+            onClick();
+        ImGui.PopStyleColor(3);
+
+        // 黑色描边文字（适配深色底色）
+        var btnMin = ImGui.GetItemRectMin();
+        var textSz = ImGui.CalcTextSize(label);
+        var txtPos = new Vector2(
+            btnMin.X + (w - textSz.X) * 0.5f,
+            btnMin.Y + (fh - textSz.Y) * 0.5f);
+        var outlineCol = ImGui.ColorConvertFloat4ToU32(new Vector4(0, 0, 0, 0.85f));
+        var txtCol = ImGui.ColorConvertFloat4ToU32(FollowColors.TextPrimary);
+        for (int dx = -1; dx <= 1; dx++)
+            for (int dy = -1; dy <= 1; dy++)
+                if (dx != 0 || dy != 0)
+                    dl.AddText(txtPos + new Vector2(dx, dy), outlineCol, label);
+        dl.AddText(txtPos, txtCol, label);
     }
 }

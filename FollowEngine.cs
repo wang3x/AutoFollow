@@ -296,7 +296,7 @@ namespace AutoFollow;
         {
             var found = _objectTable.FirstOrDefault(o =>
                 o.Name.TextValue == _followTargetName &&
-                o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Player);
+                o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc);
             if (found != null) { _followTargetId = found.ObjectIndex; return found; }
         }
         return null;

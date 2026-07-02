@@ -24,6 +24,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IFramework _framework;
     private readonly IPluginLog _logger;
     private readonly IKeyState _keyState;
+    private readonly IAetheryteList _aetheryteList;
 
     private Configuration _config = null!;
     private FollowConfig _followConfig = null!;
@@ -36,6 +37,8 @@ public sealed class Plugin : IDalamudPlugin
     private DebugLog _debugLog = null!;
     private DebugWindow _debugWindow = null!;
     private MiniWindow _miniWindow = null!;
+    private DateTime _flyMountStart;
+    private int _flyVersion;
     private PluginStatusChecker _statusChecker = null!;
 
     public Plugin(
@@ -47,7 +50,8 @@ public sealed class Plugin : IDalamudPlugin
         ICondition condition,
         IFramework framework,
         IPluginLog logger,
-        IKeyState keyState)
+        IKeyState keyState,
+        IAetheryteList aetheryteList)
     {
         _pi = pi;
         _commandManager = commandManager;
@@ -58,6 +62,7 @@ public sealed class Plugin : IDalamudPlugin
         _framework = framework;
         _logger = logger;
         _keyState = keyState;
+        _aetheryteList = aetheryteList;
 
         _config = Configuration.Load(_pi);
         _followConfig = _config.Follow;
@@ -104,7 +109,7 @@ public sealed class Plugin : IDalamudPlugin
                 if (self == null) return new List<string>();
                 var selfPos = self.Position;
                 return _objectTable
-                    .Where(o => o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Player
+                    .Where(o => o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc
                         && !o.Name.TextValue.Contains("?")
                         && !string.IsNullOrEmpty(o.Name.TextValue)
                         && Vector3.Distance(selfPos, o.Position) <= 30f)
@@ -114,7 +119,72 @@ public sealed class Plugin : IDalamudPlugin
             },
             onFollowPartyMember: (name) => { _followEngine?.SetTarget(name); _chatGui.Print($"[强效跟随] 跟随队伍成员: {name}"); },
             onEmergencyStop: () => { _followEngine?.EmergencyStop(); Notify("紧急停止"); },
-            onStatusReport: PrintStatus);
+            onStatusReport: PrintStatus,
+            getPlayerPos: () => _objectTable[0]?.Position,
+            getFlagPos: () => {
+                try {
+                    unsafe {
+                        var agentMap = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentMap.Instance();
+                        if (agentMap != null && agentMap->FlagMarkerCount > 0) {
+                            var marker = agentMap->FlagMapMarkers[0];
+                            return new Vector3(marker.XFloat, 0f, marker.YFloat);
+                        }
+                    }
+                } catch { }
+                return null;
+            },
+            onMoveFlag: () => _commandManager.ProcessCommand("/vnav moveflag"),
+            onFlyFlag: () => {
+                // 先读旗标（无论是否上坐骑，都需要区域检测）
+                var flagInfo = ReadFlagMarker();
+                if (flagInfo == null)
+                {
+                    _chatGui.Print("[强效跟随] 未设置旗标");
+                    return;
+                }
+
+                var currentTerr = TryGetTerritory(_clientState);
+                if (currentTerr == null || currentTerr.Value != (ushort)flagInfo.Value.territoryId)
+                {
+                    // 不同区域 → 先传送再上坐骑飞
+                    var aetheryteId = FindAetheryteForTerritory(flagInfo.Value.territoryId);
+                    if (aetheryteId == null)
+                    {
+                        _chatGui.Print("[强效跟随] 旗标所在区域未开通传送点");
+                        return;
+                    }
+
+                    _vnavmesh.Stop();
+                    _chatGui.Print("[强效跟随] 旗标在另一区域，正在传送...");
+                    _flyVersion++;
+                    var v = _flyVersion;
+                    _flyMountStart = DateTime.UtcNow;
+                    unsafe {
+                        var telepo = FFXIVClientStructs.FFXIV.Client.Game.UI.Telepo.Instance();
+                        if (telepo != null) telepo->Teleport(aetheryteId.Value, 0);
+                    }
+                    _framework.RunOnTick(() => OnTeleportCheck(v, flagInfo.Value.territoryId), TimeSpan.FromSeconds(1.0));
+                    return;
+                }
+
+                // 同区域：已上坐骑就直接飞，否则上坐骑再飞
+                if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
+                {
+                    _commandManager.ProcessCommand("/vnav flyflag");
+                    return;
+                }
+
+                _vnavmesh.Stop();
+                unsafe {
+                    var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
+                    if (am != null) am->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.Mount, 1);
+                }
+                _flyVersion++;
+                var ver = _flyVersion;
+                _flyMountStart = DateTime.UtcNow;
+                _framework.RunOnTick(() => OnFlyCheckMount(ver), TimeSpan.FromSeconds(1.0));
+            },
+            onStop: () => _commandManager.ProcessCommand("/vnav stop"));
 
         _pi.UiBuilder.Draw += DrawUi;
         _pi.UiBuilder.OpenMainUi += () => _miniWindow.IsOpen = !_miniWindow.IsOpen;
@@ -331,7 +401,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
 
             // 选中了玩家 → 直接跟随
             var obj = _objectTable.SearchById(target->EntityId);
-            if (obj != null && obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Player)
+            if (obj != null && obj.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc)
             {
                 _followEngine?.SetTarget(targetName);
                 ts->Target = null;
@@ -405,6 +475,33 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         _ => "未知",
     };
 
+    /// <summary>读取旗标数据（位置 + 所在区域 ID）</summary>
+    private unsafe (Vector3 pos, uint territoryId)? ReadFlagMarker()
+    {
+        try
+        {
+            var agentMap = FFXIVClientStructs.FFXIV.Client.UI.Agent.AgentMap.Instance();
+            if (agentMap != null && agentMap->FlagMarkerCount > 0)
+            {
+                var marker = agentMap->FlagMapMarkers[0];
+                return (new Vector3(marker.XFloat, 0f, marker.YFloat), marker.TerritoryId);
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    /// <summary>在指定区域找一个已解锁的可用水晶</summary>
+    private uint? FindAetheryteForTerritory(uint territoryId)
+    {
+        foreach (var aetheryte in _aetheryteList)
+        {
+            if (aetheryte.TerritoryId == territoryId)
+                return aetheryte.AetheryteId;
+        }
+        return null;
+    }
+
     /// <summary>读取当前 TerritoryType，按可靠性优先级：原生 GameMain → 反射</summary>
     private static unsafe ushort? TryGetTerritory(IClientState cs)
     {
@@ -434,6 +531,80 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         catch { }
 
         return null;
+    }
+
+    /// <summary>轮询检测坐骑是否就绪，成功→飞行，超时→步行回退</summary>
+    private void OnFlyCheckMount(int version)
+    {
+        if (version != _flyVersion) return; // 旧轮询链，丢弃
+
+        if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
+        {
+            _commandManager.ProcessCommand("/vnav flyflag");
+            return;
+        }
+        if ((DateTime.UtcNow - _flyMountStart).TotalSeconds >= 5)
+        {
+            _commandManager.ProcessCommand("/vnav moveflag");
+            _chatGui.Print("[强效跟随] 上坐骑失败，已改为步行至旗标");
+            return;
+        }
+        var v = version;
+        _framework.RunOnTick(() => OnFlyCheckMount(v), delay: TimeSpan.FromSeconds(1.0));
+    }
+
+    /// <summary>轮询等待传送完成，到达目标区域后自动上坐骑飞</summary>
+    private void OnTeleportCheck(int version, uint targetTerritory)
+    {
+        if (version != _flyVersion) return;
+
+        if ((DateTime.UtcNow - _flyMountStart).TotalSeconds >= 20)
+        {
+            _chatGui.Print("[强效跟随] 传送超时，已取消");
+            return;
+        }
+
+        // 仍在传送/加载中
+        if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas])
+        {
+            var v = version; var t = targetTerritory;
+            _framework.RunOnTick(() => OnTeleportCheck(v, t), delay: TimeSpan.FromSeconds(1.0));
+            return;
+        }
+
+        // 确认已抵达目标区域
+        var currentTerr = TryGetTerritory(_clientState);
+        if (currentTerr == null || currentTerr.Value != (ushort)targetTerritory)
+        {
+            var v = version; var t = targetTerritory;
+            _framework.RunOnTick(() => OnTeleportCheck(v, t), delay: TimeSpan.FromSeconds(1.0));
+            return;
+        }
+
+        // 已到达 → 稍等让世界加载完成，然后上坐骑
+        _flyMountStart = DateTime.UtcNow;
+        _framework.RunOnTick(() => StartMountAfterTeleport(version), delay: TimeSpan.FromSeconds(1.5));
+    }
+
+    /// <summary>传送到达后：如果已上坐骑直接飞，否则上坐骑→飞</summary>
+    private void StartMountAfterTeleport(int version)
+    {
+        if (version != _flyVersion) return;
+
+        // 已上坐骑（传送后恢复坐骑状态）→ 直接飞
+        if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
+        {
+            _commandManager.ProcessCommand("/vnav flyflag");
+            return;
+        }
+
+        _vnavmesh.Stop();
+        unsafe {
+            var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
+            if (am != null) am->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.Mount, 1);
+        }
+        _flyMountStart = DateTime.UtcNow;
+        _framework.RunOnTick(() => OnFlyCheckMount(version), delay: TimeSpan.FromSeconds(1.0));
     }
 
     private void DrawUi()

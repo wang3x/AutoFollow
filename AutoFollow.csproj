@@ -9,8 +9,8 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>AutoFollow</AssemblyName>
-    <AssemblyVersion>1.5.6.0</AssemblyVersion>
-    <FileVersion>1.5.6.0</FileVersion>
+    <AssemblyVersion>1.6.0.0</AssemblyVersion>
+    <FileVersion>1.6.0.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -34,6 +34,11 @@
 
   <Target Name="CopyJsonToOutput" AfterTargets="Build">
     <Copy SourceFiles="AutoFollow.json" DestinationFolder="$(OutDir)" />
+  </Target>
+
+  <!-- 编译后自动复制到成品文件夹（仅 Release） -->
+  <Target Name="CopyTo成品" AfterTargets="Build" Condition="'$(Configuration)'=='Release'">
+    <Copy SourceFiles="$(OutDir)\AutoFollow.dll;$(OutDir)\AutoFollow.pdb;$(OutDir)\AutoFollow.json;$(OutDir)\AutoFollow.deps.json;$(OutDir)\ImGui.NET.dll" DestinationFolder="$(MSBuildProjectDirectory)\成品" />
   </Target>
 
 </Project>

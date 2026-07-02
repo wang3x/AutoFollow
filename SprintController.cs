@@ -17,6 +17,7 @@ public sealed class SprintController : IDisposable
 
     private DateTime _lastSprintAttempt;
     private bool _isSprinting;
+    private DateTime _lastMountAttempt;
 
     public bool IsSprinting => _isSprinting;
 
@@ -107,12 +108,15 @@ public sealed class SprintController : IDisposable
         if (_condition[ConditionFlag.BetweenAreas]) return;
         if (_condition[ConditionFlag.Casting]) return;
 
+        if ((DateTime.UtcNow - _lastMountAttempt).TotalSeconds < 5) return;
+        _lastMountAttempt = DateTime.UtcNow;
+
         var am = ActionManager.Instance();
         if (am == null) return;
 
-        // 使用默认坐骑（ActionType.Mount, mountId）
-        // mountId 0 = 默认/随机坐骑
-        am->UseAction(ActionType.Mount, 0);
+        // 使用陆行鸟（ActionType.Mount, mountId）
+        // mountId 1 = 陆行鸟
+        am->UseAction(ActionType.Mount, 1);
     }
 
     public void Reset()
