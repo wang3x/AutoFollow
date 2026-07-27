@@ -33,6 +33,12 @@ public class FollowConfig
     public List<uint> BlacklistedMaps { get; set; } = new();
     public bool ChatOutput { get; set; } = false;
 
+    // ── 其他控制 ──
+    public bool ContinueOnTargetLost { get; set; } = true;
+    public bool AutoFollowAfterZoneChange { get; set; } = true;
+    public bool AutoAcceptTeleport { get; set; } = true;
+    public bool PauseOnDutyComplete { get; set; } = true;
+
     public List<CustomCommandEntry> CustomCommands { get; set; } = new()
     {
         new() { Command = "/flp",   Action = CommandAction.PauseLoop,          Description = "暂停循环插件" },

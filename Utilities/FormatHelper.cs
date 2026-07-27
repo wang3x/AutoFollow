@@ -8,7 +8,6 @@ public static class FormatHelper
     {
         if (yalms > 150f) return " --- ";
         if (yalms > 100f) return $"{yalms,5:F0}";
-        if (yalms > 10f)  return $"{yalms,5:F1}";
         return $"{yalms,5:F1}";
     }
 

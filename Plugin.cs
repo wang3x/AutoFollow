@@ -2,12 +2,15 @@
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using Dalamud.Game.DutyState;
 using AutoFollow.Commands;
 using AutoFollow.Conditions;
 using AutoFollow.IPC;
 using AutoFollow.Models;
 using AutoFollow.Movement;
 using AutoFollow.Windows;
+using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Component.GUI;
 
 namespace AutoFollow;
 
@@ -25,6 +28,8 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IPluginLog _logger;
     private readonly IKeyState _keyState;
     private readonly IAetheryteList _aetheryteList;
+    private readonly IGameGui _gameGui;
+    private readonly IDutyState _dutyState;
 
     private Configuration _config = null!;
     private FollowConfig _followConfig = null!;
@@ -37,8 +42,10 @@ public sealed class Plugin : IDalamudPlugin
     private DebugLog _debugLog = null!;
     private DebugWindow _debugWindow = null!;
     private MiniWindow _miniWindow = null!;
-    private DateTime _flyMountStart;
+private DateTime _flyMountStart;
     private int _flyVersion;
+    private ushort? _lastTerritory;
+    private DateTime _lastTeleportClick = DateTime.MinValue;
     private PluginStatusChecker _statusChecker = null!;
 
     public Plugin(
@@ -51,7 +58,9 @@ public sealed class Plugin : IDalamudPlugin
         IFramework framework,
         IPluginLog logger,
         IKeyState keyState,
-        IAetheryteList aetheryteList)
+        IAetheryteList aetheryteList,
+        IGameGui gameGui,
+        IDutyState dutyState)
     {
         _pi = pi;
         _commandManager = commandManager;
@@ -63,11 +72,13 @@ public sealed class Plugin : IDalamudPlugin
         _logger = logger;
         _keyState = keyState;
         _aetheryteList = aetheryteList;
+        _gameGui = gameGui;
+        _dutyState = dutyState;
 
         _config = Configuration.Load(_pi);
         _followConfig = _config.Follow;
 
-        _debugLog = new DebugLog { Enabled = true };
+_debugLog = new DebugLog();
         _statusChecker = new PluginStatusChecker(_pi, _logger);
 
         _conditionManager = new ConditionManager(_condition);
@@ -88,8 +99,7 @@ public sealed class Plugin : IDalamudPlugin
             onSave: () => _config.Save(), onCommandReload: OnConfigChanged,
             getState: () => _followEngine?.State ?? FollowState.Idle,
             getTargetName: () => _followEngine?.TargetName,
-            getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
-            getBossActive: () => false,
+getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             getInCombat: () => _followEngine?.Conditions.InCombat ?? false,
             onClearTarget: () => _followEngine?.SetTarget(null),
             onMoveFlag: () => _commandManager.ProcessCommand("/vnav moveflag"),
@@ -232,6 +242,15 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         // 紧急停止热键检查（每帧轻量检测）
         _framework.Update += CheckEmergencyHotkey;
 
+        // 区域切换检查
+        _framework.Update += CheckZoneChange;
+
+        // 自动接受传送邀请
+        _framework.Update += CheckTeleportInvitation;
+
+        // 副本通关后暂停跟随
+        _dutyState.DutyCompleted += OnDutyCompleted;
+
         _logger.Debug("首帧初始化完成");
     }
 
@@ -244,7 +263,161 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             _followEngine?.EmergencyStop();
     }
 
+    /// <summary>检测区域切换 → 自动恢复跟随</summary>
+    private void CheckZoneChange(IFramework _)
+    {
+        if (!_followConfig.AutoFollowAfterZoneChange) return;
+        if (_followEngine == null) return;
+
+        var current = TryGetTerritory(_clientState);
+        if (current == null) return;
+
+        if (_lastTerritory != null && _lastTerritory != current)
+        {
+            _logger.Debug($"区域变更: {_lastTerritory} → {current}");
+            _lastTerritory = current;
+
+            // 等加载完成后再恢复（BetweenAreas 结束后延迟一帧）
+            if (!_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas])
+            {
+                _framework.RunOnTick(() =>
+                {
+                    if (!_followConfig.AutoFollowAfterZoneChange) return;
+                    if (_followEngine == null) return;
+                    if (string.IsNullOrEmpty(_followEngine.TargetName)) return;
+                    if (_followEngine.State is FollowState.Following) return;
+
+                    _logger.Info("换图后自动恢复跟随");
+                    _chatGui.Print("[强效跟随] 换图后自动恢复跟随");
+                    _followEngine.Start();
+                }, TimeSpan.FromSeconds(1.5));
+            }
+        }
+        else
+        {
+            _lastTerritory = current;
+        }
+    }
+
+    /// <summary>副本通关后暂停跟随（BOSS击杀完毕、系统提示"副本已完成"时）</summary>
+    private void OnDutyCompleted(IDutyStateEventArgs args)
+    {
+        if (!_followConfig.PauseOnDutyComplete) return;
+        if (_followEngine == null) return;
+        _logger.Info("副本通关，暂停跟随");
+        _chatGui.Print("[强效跟随] 副本通关，已暂停跟随");
+        _followEngine.Pause("副本已完成");
+    }
+
+    /// <summary>每帧检测传送邀请确认框，自动点"是"</summary>
+    private unsafe void CheckTeleportInvitation(IFramework _)
+    {
+        if (!_followConfig.AutoAcceptTeleport) return;
+        if (_followEngine == null) return;
+        // 跟随相关状态都接受（含追赶/战斗/目标丢失），避免传送弹窗瞬间状态不对导致漏点
+        if (_followEngine.State is not (FollowState.Following or FollowState.CatchingUp
+            or FollowState.Combat or FollowState.TargetLost))
+            return;
+
+        // 节流：避免同一弹窗每帧狂点
+        if ((DateTime.UtcNow - _lastTeleportClick).TotalMilliseconds < 500)
+            return;
+
+// 游戏内 addon 名是 SelectYesno（小写 n）；AtkUnitBasePtr 用 .Address 取址
+        var addon = GetSelectYesnoAddon();
+        if (addon == null || !addon->IsVisible) return;
+
+        // 优先读 AddonSelectYesno.PromptText，其次 node id=2
+        var text = string.Empty;
+        try
+        {
+            var yesno = (AddonSelectYesno*)addon;
+            if (yesno->PromptText != null)
+                text = yesno->PromptText->NodeText.ToString() ?? string.Empty;
+        }
+        catch { /* ignore */ }
+
+        if (string.IsNullOrEmpty(text))
+        {
+            var textNode = addon->GetTextNodeById(2);
+            if (textNode != null)
+                text = textNode->NodeText.ToString() ?? string.Empty;
+        }
+
+        // 部分客户端 node 布局不同：扫一遍可见文本节点
+        if (string.IsNullOrEmpty(text) || !IsTeleportPrompt(text))
+        {
+            text = TryReadSelectYesnoText(addon) ?? text;
+        }
+
+        if (string.IsNullOrEmpty(text) || !IsTeleportPrompt(text))
+            return;
+
+        _lastTeleportClick = DateTime.UtcNow;
+        _logger.Info($"自动接受传送邀请: {text}");
+        _chatGui.Print("[强效跟随] 自动接受传送邀请");
+        _debugLog.Log("传送", $"自动点是: {text}");
+
+        // FireCallbackInt(0) = 点"是"（比手动构造 AtkValue 更稳）
+        addon->FireCallbackInt(0);
+    }
+
+    private unsafe AtkUnitBase* GetSelectYesnoAddon()
+    {
+        var ptr = ResolveAddonPtr("SelectYesno");
+        if (ptr != null) return ptr;
+        return ResolveAddonPtr("SelectYesNo");
+    }
+
+    private unsafe AtkUnitBase* ResolveAddonPtr(string name)
+    {
+        try
+        {
+            var handle = _gameGui.GetAddonByName(name, 1);
+            var addr = handle.Address;
+            if (addr != nint.Zero)
+                return (AtkUnitBase*)addr;
+        }
+        catch (Exception ex)
+        {
+            _logger.Debug($"GetAddonByName({name}) 失败: {ex.Message}");
+        }
+        return null;
+    }
+
+    private static bool IsTeleportPrompt(string text)
+    {
+        // 中/英常见传送确认文案
+        return text.Contains("传送", StringComparison.Ordinal)
+            || text.Contains("瞬移", StringComparison.Ordinal)
+            || text.Contains("Teleport", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("teleport", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("想要对你使用", StringComparison.Ordinal);
+    }
+
+    private static unsafe string? TryReadSelectYesnoText(AtkUnitBase* addon)
+    {
+        try
+        {
+            var count = addon->UldManager.NodeListCount;
+            var list = addon->UldManager.NodeList;
+            if (list == null) return null;
+            for (var i = 0; i < count; i++)
+            {
+                var node = list[i];
+                if (node == null || node->Type != NodeType.Text) continue;
+                var tn = (AtkTextNode*)node;
+                var s = tn->NodeText.ToString();
+                if (!string.IsNullOrWhiteSpace(s) && s.Length > 4)
+                    return s;
+            }
+        }
+        catch { }
+        return null;
+    }
+
     private void OnConfigChanged()
+
     {
         _config.Save();
         _customCommands.Reload();
@@ -424,15 +597,8 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                 }
             }
 
-            return false;
+return false;
         }
-    }
-
-    /// <summary>保留原公开方法，供命令系统等外部调用</summary>
-    private void SmartFollow()
-    {
-        if (!TrySmartFollow())
-            _chatGui.Print("[强效跟随] 无法确定跟随目标");
     }
 
     /// <summary>简洁的聊天通知（仅在 ChatOutput 关闭时仍输出关键信息）</summary>
@@ -617,6 +783,9 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
     {
         _framework.Update -= FirstFrameInit;
         _framework.Update -= CheckEmergencyHotkey;
+        _framework.Update -= CheckZoneChange;
+        _framework.Update -= CheckTeleportInvitation;
+        _dutyState.DutyCompleted -= OnDutyCompleted;
         _followEngine?.Dispose();
         _customCommands?.Dispose();
         _ipc?.Dispose();

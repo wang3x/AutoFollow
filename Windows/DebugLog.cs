@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 
 namespace AutoFollow.Windows;
 
-/// <summary>指令日志 — 记录每一步操作，用于调试（自动去重，同内容3秒内不重复记录）</summary>
+/// <summary>指令日志 — 记录每一步操作，用于调试（自动去重，同内容 10 秒内不重复记录）</summary>
 public sealed class DebugLog
 {
     private readonly ConcurrentQueue<LogEntry> _entries = new();
@@ -10,7 +10,7 @@ public sealed class DebugLog
     private string? _lastMsg;
     private DateTime _lastTime;
 
-    public bool Enabled { get; set; } = false;
+    public bool Enabled { get; set; } = true;
 
     public IReadOnlyCollection<LogEntry> Entries => _entries.ToArray();
 
@@ -18,7 +18,7 @@ public sealed class DebugLog
     {
         if (!Enabled) return;
 
-        // 同内容3秒内不重复记录（防刷屏）
+        // 同内容 10 秒内不重复记录（防刷屏）
         var now = DateTime.Now;
         if (message == _lastMsg && (now - _lastTime).TotalSeconds < 10)
             return;

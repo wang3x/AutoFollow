@@ -22,7 +22,6 @@ public sealed class DebugWindow
     private readonly Func<FollowState> _getState;
     private readonly Func<string?> _getTargetName;
     private readonly Func<float> _getDistance;
-    private readonly Func<bool> _getBossActive;
     private readonly Func<bool> _getInCombat;
     private readonly Action _onClearTarget;
 
@@ -39,14 +38,14 @@ public sealed class DebugWindow
         FollowConfig config, Func<Vector3?> getPlayerPos, Func<Vector3?> getTargetPos,
         Action<Vector3> onManualMove, Action onSave, Action onCommandReload,
         Func<FollowState> getState, Func<string?> getTargetName, Func<float> getDistance,
-        Func<bool> getBossActive, Func<bool> getInCombat, Action onClearTarget,
+        Func<bool> getInCombat, Action onClearTarget,
         Action onMoveFlag, Action onFlyFlag, Action onStop, Func<ushort?> getTerritory)
     {
         _log = log; _statusChecker = statusChecker; _config = config;
         _getPlayerPos = getPlayerPos; _getTargetPos = getTargetPos;
         _onManualMove = onManualMove; _onSave = onSave; _onCommandReload = onCommandReload;
         _getState = getState; _getTargetName = getTargetName; _getDistance = getDistance;
-        _getBossActive = getBossActive; _getInCombat = getInCombat; _onClearTarget = onClearTarget; _onMoveFlag = onMoveFlag; _onFlyFlag = onFlyFlag; _onStop = onStop; _getTerritory = getTerritory;
+        _getInCombat = getInCombat; _onClearTarget = onClearTarget; _onMoveFlag = onMoveFlag; _onFlyFlag = onFlyFlag; _onStop = onStop; _getTerritory = getTerritory;
     }
 
     public void Draw()
@@ -283,6 +282,30 @@ public sealed class DebugWindow
 
             ImGui.Separator();
             if (ImGui.Button("恢复默认")) { ResetDistanceDefaults(); _onSave(); }
+        }
+
+        // ── 其他控制（默认打开） ──
+        if (ImGui.CollapsingHeader("其他控制", ImGuiTreeNodeFlags.DefaultOpen))
+        {
+            var cont = _config.ContinueOnTargetLost;
+            if (ImGui.Checkbox("目标丢失后继续移动 1.5 秒##continueOnLost", ref cont))
+                { _config.ContinueOnTargetLost = cont; _onSave(); }
+            ImGui.TextDisabled("跟随目标在视野内丢失时，自动沿原方向继续移动 1.5 秒再停止");
+
+            var autoZone = _config.AutoFollowAfterZoneChange;
+            if (ImGui.Checkbox("换图后自动恢复跟随##autoFollowZone", ref autoZone))
+                { _config.AutoFollowAfterZoneChange = autoZone; _onSave(); }
+            ImGui.TextDisabled("切换地图后自动寻找上一个跟随目标并恢复跟随");
+
+            var autoTp = _config.AutoAcceptTeleport;
+            if (ImGui.Checkbox("自动接受队友传送邀请##autoAcceptTp", ref autoTp))
+                { _config.AutoAcceptTeleport = autoTp; _onSave(); }
+            ImGui.TextDisabled("跟随中自动点「是」接受队友发起的跨区域传送邀请");
+
+            var pauseDuty = _config.PauseOnDutyComplete;
+            if (ImGui.Checkbox("副本通关后暂停跟随##pauseOnDuty", ref pauseDuty))
+                { _config.PauseOnDutyComplete = pauseDuty; _onSave(); }
+            ImGui.TextDisabled("通关副本（最后一个BOSS击杀）时立即暂停跟随，回到野外后可手动或勾选\"换图后自动恢复\"");
         }
 
         // ── 疾跑/坐骑（默认关闭） ──
