@@ -13,7 +13,6 @@ namespace AutoFollow.IPC;
 public sealed class VnavmeshIPC : IDisposable
 {
     private readonly IDalamudPluginInterface _pi;
-    private readonly IPluginLog _logger;
     private readonly DebugLog _debugLog;
 
     private ICallGateSubscriber<bool>? _navIsReady;
@@ -31,10 +30,9 @@ public sealed class VnavmeshIPC : IDisposable
         get { if (!_connectionAttempted) TryConnect(); return _isAvailable; }
     }
 
-    public VnavmeshIPC(IDalamudPluginInterface pi, IPluginLog logger, DebugLog debugLog)
+    public VnavmeshIPC(IDalamudPluginInterface pi, DebugLog debugLog)
     {
         _pi = pi;
-        _logger = logger;
         _debugLog = debugLog;
     }
 
@@ -52,14 +50,14 @@ public sealed class VnavmeshIPC : IDisposable
             _isAvailable = _navIsReady.InvokeFunc();
             if (_isAvailable)
             {
-                _logger.Info("vnavmesh IPC ready");
+                Log.Info("vnavmesh IPC ready");
                 _debugLog.Log("IPC", "vnavmesh connected");
             }
         }
         catch (Exception ex)
         {
             _isAvailable = false;
-            _logger.Info("vnavmesh not available: {0}", ex.Message);
+            Log.Info($"vnavmesh not available: {ex.Message}");
         }
     }
 

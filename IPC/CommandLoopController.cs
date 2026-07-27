@@ -9,7 +9,6 @@ namespace AutoFollow.IPC;
 public sealed class CommandLoopController
 {
     private readonly ICommandManager _commandManager;
-    private readonly IPluginLog _logger;
 
     private string? _pauseCmd;
     private string? _resumeCmd;
@@ -23,10 +22,9 @@ public sealed class CommandLoopController
     /// <summary>恢复命令内容</summary>
     public string? ResumeCommand => _resumeCmd;
 
-    public CommandLoopController(ICommandManager commandManager, IPluginLog logger)
+    public CommandLoopController(ICommandManager commandManager)
     {
         _commandManager = commandManager;
-        _logger = logger;
     }
 
     /// <summary>更新命令配置（用户保存设置时调用）</summary>
@@ -34,14 +32,14 @@ public sealed class CommandLoopController
     {
         _pauseCmd = string.IsNullOrWhiteSpace(pause) ? null : pause.Trim();
         _resumeCmd = string.IsNullOrWhiteSpace(resume) ? null : resume.Trim();
-        _logger.Info("循环插件命令已更新: 暂停=[{0}] 恢复=[{1}]", _pauseCmd ?? "", _resumeCmd ?? "");
+        Log.Info($"循环插件命令已更新: 暂停=[{_pauseCmd ?? ""}] 恢复=[{_resumeCmd ?? ""}]");
     }
 
     /// <summary>发送暂停命令</summary>
     public bool SendPause()
     {
         if (!IsConfigured) return false;
-        _logger.Debug("执行暂停命令: {0}", _pauseCmd ?? "");
+        Log.Debug($"执行暂停命令: {_pauseCmd ?? ""}");
         _commandManager.ProcessCommand(_pauseCmd!);
         return true;
     }
@@ -52,11 +50,11 @@ public sealed class CommandLoopController
         if (string.IsNullOrWhiteSpace(_resumeCmd))
         {
             if (!IsConfigured) return false;
-            _logger.Debug("未配置恢复命令，发送暂停命令: {0}", _pauseCmd ?? "");
+            Log.Debug($"未配置恢复命令，发送暂停命令: {_pauseCmd ?? ""}");
             _commandManager.ProcessCommand(_pauseCmd!);
             return true;
         }
-        _logger.Debug("执行恢复命令: {0}", _resumeCmd ?? "");
+        Log.Debug($"执行恢复命令: {_resumeCmd ?? ""}");
         _commandManager.ProcessCommand(_resumeCmd!);
         return true;
     }

@@ -11,7 +11,6 @@ public sealed class SprintController : IDisposable
 {
     private const uint SprintActionId = 4;
 
-    private readonly IChatGui _chatGui;
     private readonly ICondition _condition;
     private readonly FollowConfig _config;
 
@@ -21,9 +20,8 @@ public sealed class SprintController : IDisposable
 
     public bool IsSprinting => _isSprinting;
 
-    public SprintController(IChatGui chatGui, ICondition condition, FollowConfig config)
+    public SprintController(ICondition condition, FollowConfig config)
     {
-        _chatGui = chatGui;
         _condition = condition;
         _config = config;
     }

@@ -21,8 +21,6 @@ public sealed class FollowEngine : IDisposable
     }
 
     private readonly IObjectTable _objectTable;
-    private readonly IChatGui _chatGui;
-    private readonly IPluginLog _logger;
     private readonly IFramework _framework;
     private readonly FollowConfig _config;
     private readonly ConditionManager _conditionManager;
@@ -32,7 +30,6 @@ public sealed class FollowEngine : IDisposable
     private readonly DebugLog _debugLog;
 
     private FollowState _state = FollowState.Idle;
-    private FollowState _lastMsgState = FollowState.Idle;
     private string? _followTargetName;
     private ulong? _followTargetId;
     private Vector3? _lastSentPosition;
@@ -77,22 +74,14 @@ public sealed class FollowEngine : IDisposable
     private readonly Func<ushort?> _getTerritory;
 
     public FollowEngine(
-        IObjectTable objectTable, IChatGui chatGui, IPluginLog logger, IFramework framework,
+        IObjectTable objectTable, IFramework framework,
         FollowConfig config, ConditionManager conditionManager, SprintController sprint,
         IPCService ipc, VnavmeshFollow vnavmesh, DebugLog debugLog,
         Func<ushort?> getTerritory)
     {
-        _objectTable = objectTable; _chatGui = chatGui; _logger = logger; _framework = framework;
+        _objectTable = objectTable; _framework = framework;
         _config = config; _conditionManager = conditionManager; _sprint = sprint;
         _ipc = ipc; _vnavmesh = vnavmesh; _debugLog = debugLog; _getTerritory = getTerritory;
-    }
-
-    private void PrintMsg(string msg)
-    {
-        if (!_config.ChatOutput) return;
-        if (_state == _lastMsgState) return;
-        _lastMsgState = _state;
-        _chatGui.Print(msg);
     }
 
     public void Start() { _framework.Update += OnTick; _lastUpdate = DateTime.MinValue; _followStartTime = DateTime.UtcNow; _debugLog.Log("引擎", "启动帧监听"); }
@@ -155,7 +144,7 @@ public sealed class FollowEngine : IDisposable
                     }
                 }
             }
-            PrintMsg("[强效跟随] 脱战恢复跟随");
+            Log.Print("[强效跟随] 脱战恢复跟随");
             _debugLog.Log("state", "脱战恢复跟随");
             ResumeFollow();
             return;
@@ -205,7 +194,7 @@ public sealed class FollowEngine : IDisposable
         var graceRemaining = StartupGracePeriod - (DateTime.UtcNow - _followStartTime).TotalSeconds;
         if (DistanceToTarget <= _config.CombatEnterRange && _state != FollowState.Combat && graceRemaining <= 0)
         {
-            PrintMsg($"[强效跟随] 距离≤{_config.CombatEnterRange}y，暂停跟随");
+            Log.Print($"[强效跟随] 距离≤{_config.CombatEnterRange}y，暂停跟随");
             _debugLog.Log("state", $"暂停跟随 距离≤{_config.CombatEnterRange}y");
             _vnavmesh.Stop(); _ipc.ResumeLoop(); SetState(FollowState.Combat); return;
         }
@@ -218,7 +207,7 @@ public sealed class FollowEngine : IDisposable
             }
             else
             {
-                PrintMsg($"[强效跟随] 距离>{_config.CombatExitRange}y，恢复跟随");
+                Log.Print($"[强效跟随] 距离>{_config.CombatExitRange}y，恢复跟随");
                 _debugLog.Log("state", $"恢复跟随 距离>{_config.CombatExitRange}y");
                 ResumeFollow();
             }
@@ -500,7 +489,7 @@ public sealed class FollowEngine : IDisposable
 
         if (_state != FollowState.Paused)
         {
-            PrintMsg("[强效跟随] 当前地图在黑名单中，暂停跟随");
+            Log.Print("[强效跟随] 当前地图在黑名单中，暂停跟随");
             _debugLog.Log("状态", $"地图{territory.Value}在黑名单中");
             PauseReason = "地图黑名单";
             ClearInertiaState();
@@ -533,7 +522,7 @@ public sealed class FollowEngine : IDisposable
             _followTargetName = null; _followTargetId = null; _lastSentPosition = null;
             ClearInertiaState();
             SetState(FollowState.Idle); _vnavmesh.Stop();
-            PrintMsg("[强效跟随] target cleared");
+            Log.Print("[强效跟随] target cleared");
             _debugLog.Log("命令", "清除跟随目标");
             return;
         }
@@ -558,7 +547,7 @@ public sealed class FollowEngine : IDisposable
 
     public void EmergencyStop()
     {
-        PrintMsg("[强效跟随] 紧急停止");
+        Log.Print("[强效跟随] 紧急停止");
         _debugLog.Log("cmd", "emergency stop");
         ClearInertiaState();
         SetState(FollowState.EmergencyStopped);

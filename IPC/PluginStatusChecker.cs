@@ -11,7 +11,6 @@ namespace AutoFollow.IPC;
 public sealed class PluginStatusChecker
 {
     private readonly IDalamudPluginInterface _pi;
-    private readonly IPluginLog _logger;
     private readonly List<PluginCheck> _plugins = new();
 
     public IReadOnlyList<PluginCheck> Results => _plugins;
@@ -26,10 +25,9 @@ public sealed class PluginStatusChecker
         ["RotationSolver"] = ("RotationSolver", PluginKind.Rotation),
     };
 
-    public PluginStatusChecker(IDalamudPluginInterface pi, IPluginLog logger)
+    public PluginStatusChecker(IDalamudPluginInterface pi)
     {
         _pi = pi;
-        _logger = logger;
     }
 
     /// <summary>扫描已安装的插件</summary>
@@ -64,7 +62,7 @@ public sealed class PluginStatusChecker
                 check.Message = "未安装";
             }
 
-            _logger.Info("插件检测: {0} -> {1}", displayName, check.Message);
+            Log.Info($"插件检测: {displayName} -> {check.Message}");
             _plugins.Add(check);
         }
     }

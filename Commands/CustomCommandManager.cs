@@ -11,8 +11,6 @@ namespace AutoFollow.Commands;
 public sealed class CustomCommandManager : IDisposable
 {
     private readonly ICommandManager _commandManager;
-    private readonly IChatGui _chatGui;
-    private readonly IPluginLog _logger;
     private readonly FollowConfig _config;
     private readonly Action<CommandAction, string> _executeAction;
 
@@ -21,14 +19,10 @@ public sealed class CustomCommandManager : IDisposable
 
     public CustomCommandManager(
         ICommandManager commandManager,
-        IChatGui chatGui,
-        IPluginLog logger,
         FollowConfig config,
         Action<CommandAction, string> executeAction)
     {
         _commandManager = commandManager;
-        _chatGui = chatGui;
-        _logger = logger;
         _config = config;
         _executeAction = executeAction;
     }
@@ -60,11 +54,11 @@ public sealed class CustomCommandManager : IDisposable
                 });
 
                 _registeredCommands.Add(cmdText);
-                _logger.Info("注册命令: {0} → {1}", cmdText, entry.Action);
+                Log.Info($"注册命令: {cmdText} → {entry.Action}");
             }
             catch (Exception ex)
             {
-                _logger.Warning("命令注册失败 {0}: {1}", cmdText, ex.Message);
+                Log.Warning($"命令注册失败 {cmdText}: {ex.Message}");
             }
         }
     }

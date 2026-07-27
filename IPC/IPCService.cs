@@ -9,10 +9,10 @@ public sealed class IPCService : IDisposable
     public VnavmeshIPC Vnavmesh { get; }
     public CommandLoopController LoopController { get; }
 
-    public IPCService(IDalamudPluginInterface pi, IPluginLog logger, ICommandManager commandManager, DebugLog debugLog)
+    public IPCService(IDalamudPluginInterface pi, ICommandManager commandManager, DebugLog debugLog)
     {
-        Vnavmesh = new VnavmeshIPC(pi, logger, debugLog);
-        LoopController = new CommandLoopController(commandManager, logger);
+        Vnavmesh = new VnavmeshIPC(pi, debugLog);
+        LoopController = new CommandLoopController(commandManager);
     }
 
     public string GetLoopPluginSummary()

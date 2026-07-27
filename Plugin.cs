@@ -78,14 +78,17 @@ private DateTime _flyMountStart;
         _config = Configuration.Load(_pi);
         _followConfig = _config.Follow;
 
+        // 初始化全局日志/聊天输出（之后都用 Log.Print/Log.Notice/Log.*）
+        Log.Initialize(_chatGui, _logger, () => _followConfig.ChatOutput);
+
 _debugLog = new DebugLog();
-        _statusChecker = new PluginStatusChecker(_pi, _logger);
+        _statusChecker = new PluginStatusChecker(_pi);
 
         _conditionManager = new ConditionManager(_condition);
-        _sprint = new SprintController(_chatGui, _condition, _followConfig);
+        _sprint = new SprintController(_condition, _followConfig);
 
         _customCommands = new CustomCommandManager(
-            _commandManager, _chatGui, _logger, _followConfig, ExecuteCommandAction);
+            _commandManager, _followConfig, ExecuteCommandAction);
         _customCommands.Reload();
 
         _debugWindow = new DebugWindow(_debugLog, _statusChecker, _followConfig,
@@ -127,7 +130,7 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
                     .Distinct()
                     .ToList();
             },
-            onFollowPartyMember: (name) => { _followEngine?.SetTarget(name); _chatGui.Print($"[强效跟随] 跟随队伍成员: {name}"); },
+            onFollowPartyMember: (name) => { _followEngine?.SetTarget(name); Log.Notice($"[强效跟随] 跟随队伍成员: {name}"); },
             onEmergencyStop: () => { _followEngine?.EmergencyStop(); Notify("紧急停止"); },
             onStatusReport: PrintStatus,
             getPlayerPos: () => _objectTable[0]?.Position,
@@ -149,7 +152,7 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
                 var flagInfo = ReadFlagMarker();
                 if (flagInfo == null)
                 {
-                    _chatGui.Print("[强效跟随] 未设置旗标");
+                    Log.Notice("[强效跟随] 未设置旗标");
                     return;
                 }
 
@@ -160,12 +163,12 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
                     var aetheryteId = FindAetheryteForTerritory(flagInfo.Value.territoryId);
                     if (aetheryteId == null)
                     {
-                        _chatGui.Print("[强效跟随] 旗标所在区域未开通传送点");
+                        Log.Notice("[强效跟随] 旗标所在区域未开通传送点");
                         return;
                     }
 
                     _vnavmesh.Stop();
-                    _chatGui.Print("[强效跟随] 旗标在另一区域，正在传送...");
+                    Log.Notice("[强效跟随] 旗标在另一区域，正在传送...");
                     _flyVersion++;
                     var v = _flyVersion;
                     _flyMountStart = DateTime.UtcNow;
@@ -202,23 +205,23 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
 
         _framework.Update += FirstFrameInit;
 
-        _logger.Info("强效跟随已加载");
-        _chatGui.Print("[强效跟随] 已加载！/ff 切换跟随, /ftar 跟随当前目标, /fst 状态");
-_chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation off), 打开BossMod的AI功能");
+        Log.Info("强效跟随已加载");
+        Log.Notice("[强效跟随] 已加载！/ff 切换跟随, /ftar 跟随当前目标, /fst 状态");
+        Log.Notice("[强效跟随] 建议手动暂停自动输出插件(/rotation off), 打开BossMod的AI功能");
     }
 
     private void FirstFrameInit(IFramework _)
     {
         _framework.Update -= FirstFrameInit;
-        _logger.Debug("首帧初始化");
+        Log.Debug("首帧初始化");
 
-        _ipc = new IPCService(_pi, _logger, _commandManager, _debugLog);
+        _ipc = new IPCService(_pi, _commandManager, _debugLog);
         _ipc.LoopController.SetCommands(_followConfig.PauseCommand, _followConfig.ResumeCommand);
 
         _vnavmesh = new VnavmeshFollow(_ipc.Vnavmesh);
 
         _followEngine = new FollowEngine(
-            _objectTable, _chatGui, _logger, _framework,
+            _objectTable, _framework,
             _followConfig, _conditionManager, _sprint,
             _ipc, _vnavmesh, _debugLog,
             getTerritory: () => TryGetTerritory(_clientState));
@@ -251,7 +254,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         // 副本通关后暂停跟随
         _dutyState.DutyCompleted += OnDutyCompleted;
 
-        _logger.Debug("首帧初始化完成");
+        Log.Debug("首帧初始化完成");
     }
 
     private void CheckEmergencyHotkey(IFramework _)
@@ -274,7 +277,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
 
         if (_lastTerritory != null && _lastTerritory != current)
         {
-            _logger.Debug($"区域变更: {_lastTerritory} → {current}");
+            Log.Debug($"区域变更: {_lastTerritory} → {current}");
             _lastTerritory = current;
 
             // 等加载完成后再恢复（BetweenAreas 结束后延迟一帧）
@@ -287,8 +290,8 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                     if (string.IsNullOrEmpty(_followEngine.TargetName)) return;
                     if (_followEngine.State is FollowState.Following) return;
 
-                    _logger.Info("换图后自动恢复跟随");
-                    _chatGui.Print("[强效跟随] 换图后自动恢复跟随");
+                    Log.Info("换图后自动恢复跟随");
+                    Log.Notice("[强效跟随] 换图后自动恢复跟随");
                     _followEngine.Start();
                 }, TimeSpan.FromSeconds(1.5));
             }
@@ -304,8 +307,8 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
     {
         if (!_followConfig.PauseOnDutyComplete) return;
         if (_followEngine == null) return;
-        _logger.Info("副本通关，暂停跟随");
-        _chatGui.Print("[强效跟随] 副本通关，已暂停跟随");
+        Log.Info("副本通关，暂停跟随");
+        Log.Notice("[强效跟随] 副本通关，已暂停跟随");
         _followEngine.Pause("副本已完成");
     }
 
@@ -354,8 +357,8 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             return;
 
         _lastTeleportClick = DateTime.UtcNow;
-        _logger.Info($"自动接受传送邀请: {text}");
-        _chatGui.Print("[强效跟随] 自动接受传送邀请");
+        Log.Info($"自动接受传送邀请: {text}");
+        Log.Notice("[强效跟随] 自动接受传送邀请");
         _debugLog.Log("传送", $"自动点是: {text}");
 
         // FireCallbackInt(0) = 点"是"（比手动构造 AtkValue 更稳）
@@ -380,7 +383,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
         }
         catch (Exception ex)
         {
-            _logger.Debug($"GetAddonByName({name}) 失败: {ex.Message}");
+            Log.Debug($"GetAddonByName({name}) 失败: {ex.Message}");
         }
         return null;
     }
@@ -433,9 +436,9 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                 {
                     _ipc.LoopController.SendPause();
                     _debugLog.Log("命令", $"暂停循环: {_ipc.LoopController.PauseCommand}");
-                    _chatGui.Print($"[强效跟随] 已发送暂停命令: {_ipc.LoopController.PauseCommand}");
+                    Log.Notice($"[强效跟随] 已发送暂停命令: {_ipc.LoopController.PauseCommand}");
                 }
-                else _chatGui.Print("[强效跟随] 未配置循环插件暂停命令");
+                else Log.Notice("[强效跟随] 未配置循环插件暂停命令");
                 break;
 
             case CommandAction.ResumeLoop:
@@ -443,9 +446,9 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                 {
                     _ipc.LoopController.SendResume();
                     _debugLog.Log("命令", "恢复循环");
-                    _chatGui.Print("[强效跟随] 已发送恢复命令");
+                    Log.Notice("[强效跟随] 已发送恢复命令");
                 }
-                else _chatGui.Print("[强效跟随] 未配置循环插件恢复命令");
+                else Log.Notice("[强效跟随] 未配置循环插件恢复命令");
                 break;
 
             case CommandAction.ToggleLoop:
@@ -458,17 +461,17 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
 
             case CommandAction.PauseFollow:
                 _followEngine?.Pause("用户命令");
-                _chatGui.Print("[强效跟随] 已暂停");
+                Log.Notice("[强效跟随] 已暂停");
                 break;
 
             case CommandAction.ResumeFollow:
                 _followEngine?.Resume();
-                _chatGui.Print("[强效跟随] 已恢复");
+                Log.Notice("[强效跟随] 已恢复");
                 break;
 
             case CommandAction.ToggleFollow:
                 _followEngine?.Toggle();
-                _chatGui.Print(_followEngine?.State == FollowState.Following
+                Log.Notice(_followEngine?.State == FollowState.Following
                     ? "[强效跟随] 开始跟随" : "[强效跟随] 已暂停");
                 break;
 
@@ -486,21 +489,21 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                         if (!string.IsNullOrEmpty(targetName))
                         {
                             _followEngine?.SetTarget(targetName);
-                            _chatGui.Print($"[强效跟随] 已设置跟随目标: {targetName}");
+                            Log.Notice($"[强效跟随] 已设置跟随目标: {targetName}");
                             _debugLog.Log("命令", $"跟随当前目标: {targetName}");
                             // 设置成功后清除当前选中目标
                             ts->Target = null;
                         }
-                        else _chatGui.Print("[强效跟随] 目标名称无效");
+                        else Log.Notice("[强效跟随] 目标名称无效");
                     }
-                    else _chatGui.Print("[强效跟随] 未选中任何目标");
+                    else Log.Notice("[强效跟随] 未选中任何目标");
                 }
                 break;
 
             case CommandAction.SetFollowTarget:
                 if (!string.IsNullOrWhiteSpace(args))
                     _followEngine?.SetTarget(args.Trim());
-                else _chatGui.Print("[强效跟随] 用法: /ft <玩家名>");
+                else Log.Notice("[强效跟随] 用法: /ft <玩家名>");
                 break;
 
             case CommandAction.ClearFollowTarget:
@@ -552,11 +555,11 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             }
             else if (hasTarget)
             {
-                _chatGui.Print("[强效跟随] 旧目标超过30y，无法恢复");
+                Log.Notice("[强效跟随] 旧目标超过30y，无法恢复");
             }
         }
 
-        _chatGui.Print("[强效跟随] 无跟随目标，无法恢复");
+        Log.Notice("[强效跟随] 无跟随目标，无法恢复");
         return false;
     }
 
@@ -578,7 +581,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
             {
                 _followEngine?.SetTarget(targetName);
                 ts->Target = null;
-                _chatGui.Print($"[强效跟随] 开始跟随: {targetName}");
+                Log.Notice($"[强效跟随] 开始跟随: {targetName}");
                 return true;
             }
 
@@ -592,7 +595,7 @@ _chatGui.Print("[强效跟随] 建议手动暂停自动输出插件(/rotation of
                 {
                     _followEngine?.SetTarget(enemyTarget.Name.TextValue);
                     ts->Target = null;
-                    _chatGui.Print($"[强效跟随] 跟随敌方目标: {enemyTarget.Name.TextValue}");
+                    Log.Notice($"[强效跟随] 跟随敌方目标: {enemyTarget.Name.TextValue}");
                     return true;
                 }
             }
@@ -601,11 +604,11 @@ return false;
         }
     }
 
-    /// <summary>简洁的聊天通知（仅在 ChatOutput 关闭时仍输出关键信息）</summary>
+    /// <summary>简洁的聊天通知</summary>
     private void Notify(string msg)
     {
         _debugLog.Log("通知", msg);
-        _chatGui.Print($"[强效跟随] {msg}");
+        Log.Notice($"[强效跟随] {msg}");
     }
 
     private void PrintStatus()
@@ -618,15 +621,15 @@ return false;
         var sprinting = _followEngine?.Sprint.IsSprinting == true ? " [疾跑]" : "";
         var vnavReady = _vnavmesh?.IsAvailable == true ? "vnavmesh OK" : "vnavmesh 未连接";
 
-        _chatGui.Print("========== 强效跟随 ==========");
-        _chatGui.Print($"状态: {StateName(state)}{sprinting}");
+        Log.Notice("========== 强效跟随 ==========");
+        Log.Notice($"状态: {StateName(state)}{sprinting}");
         var distStr = dist > 150f ? "--" : dist < 100f ? $"{dist:F2}" : $"{dist:F1}";
-        _chatGui.Print($"目标: {target}  距离: {distStr}y  区域: {zone}");
-        _chatGui.Print($"模式: Vnavmesh寻路  {vnavReady}");
-        _chatGui.Print($"循环插件: {loopInfo}");
+        Log.Notice($"目标: {target}  距离: {distStr}y  区域: {zone}");
+        Log.Notice($"模式: Vnavmesh寻路  {vnavReady}");
+        Log.Notice($"循环插件: {loopInfo}");
         if (_followConfig.EmergencyStopKey != VirtualKey.NO_KEY)
-            _chatGui.Print($"紧急停止热键: {_followConfig.EmergencyStopKey}");
-        _chatGui.Print("================================");
+            Log.Notice($"紧急停止热键: {_followConfig.EmergencyStopKey}");
+        Log.Notice("================================");
     }
 
     private static string StateName(FollowState s) => s switch
@@ -712,7 +715,7 @@ return false;
         if ((DateTime.UtcNow - _flyMountStart).TotalSeconds >= 5)
         {
             _commandManager.ProcessCommand("/vnav moveflag");
-            _chatGui.Print("[强效跟随] 上坐骑失败，已改为步行至旗标");
+            Log.Notice("[强效跟随] 上坐骑失败，已改为步行至旗标");
             return;
         }
         var v = version;
@@ -726,7 +729,7 @@ return false;
 
         if ((DateTime.UtcNow - _flyMountStart).TotalSeconds >= 20)
         {
-            _chatGui.Print("[强效跟随] 传送超时，已取消");
+            Log.Notice("[强效跟随] 传送超时，已取消");
             return;
         }
 
@@ -791,6 +794,6 @@ return false;
         _ipc?.Dispose();
         _sprint?.Dispose();
         _pi.UiBuilder.Draw -= DrawUi;
-        _logger.Info("强效跟随已卸载");
+        Log.Info("强效跟随已卸载");
     }
 }
