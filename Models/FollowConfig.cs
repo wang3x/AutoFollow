@@ -29,7 +29,7 @@ public class FollowConfig
     public string? ResumeCommand { get; set; } = "/rotation Auto";
 
     public float MoveThreshold { get; set; } = 5f;
-    public float ScanInterval { get; set; } = 2f;
+    public float ScanInterval { get; set; } = 1f;
     public List<uint> BlacklistedMaps { get; set; } = new();
     public bool ChatOutput { get; set; } = false;
 

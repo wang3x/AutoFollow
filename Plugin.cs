@@ -307,6 +307,10 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
     {
         if (!_followConfig.PauseOnDutyComplete) return;
         if (_followEngine == null) return;
+        // 只在引擎活跃时（跟随/追赶/战斗/目标丢失）才暂停+提示；空闲/已暂停/紧急停止直接忽略
+        if (_followEngine.State is not (FollowState.Following or FollowState.CatchingUp
+            or FollowState.Combat or FollowState.TargetLost))
+            return;
         Log.Info("副本通关，暂停跟随");
         Log.Notice("[强效跟随] 副本通关，已暂停跟随");
         _followEngine.Pause("副本已完成");

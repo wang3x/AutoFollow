@@ -410,7 +410,7 @@ public sealed class DebugWindow
     {
         _config.CombatEnterRange = 10f;
         _config.CombatExitRange = 30f;
-        _config.ScanInterval = 2f;
+        _config.ScanInterval = 1f;
         _config.SprintThreshold = 20f;
         _config.MoveThreshold = 5f;
     }
