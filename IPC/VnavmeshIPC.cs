@@ -14,6 +14,7 @@ public sealed class VnavmeshIPC : IDisposable
 {
     private readonly IDalamudPluginInterface _pi;
     private readonly DebugLog _debugLog;
+    private readonly Func<Vector3?> _getPlayerPos;
 
     private ICallGateSubscriber<bool>? _navIsReady;
     private ICallGateSubscriber<Vector3, Vector3, bool, Task<List<Vector3>>>? _navPathfind;
@@ -30,10 +31,11 @@ public sealed class VnavmeshIPC : IDisposable
         get { if (!_connectionAttempted) TryConnect(); return _isAvailable; }
     }
 
-    public VnavmeshIPC(IDalamudPluginInterface pi, DebugLog debugLog)
+    public VnavmeshIPC(IDalamudPluginInterface pi, DebugLog debugLog, Func<Vector3?> getPlayerPos)
     {
         _pi = pi;
         _debugLog = debugLog;
+        _getPlayerPos = getPlayerPos;
     }
 
     private void TryConnect()
@@ -86,6 +88,19 @@ public sealed class VnavmeshIPC : IDisposable
                     _debugLog.Log("move", $"skip stale path (v{version} != v{_pathfindVersion})");
                     return;
                 }
+
+                // ── A方案：寻路完成后用玩家实时位置替换路径起点 ──
+                // 寻路计算慢，Pathfind 传入的 from 是发起时刻的位置，已与实际坐标有误差。
+                // 实时读取当前坐标覆盖 path[0]，并清掉过近的冗余节点，避免角色转头回退。
+                var playerPos = _getPlayerPos?.Invoke();
+                if (playerPos != null)
+                {
+                    path[0] = playerPos.Value;
+                    while (path.Count > 1 && Vector3.Distance(path[1], playerPos.Value) < 2f)
+                        path.RemoveAt(1);
+                    _debugLog.Log("move", $"A方案: 起点替换为实时坐标, 路径剩余 {path.Count} 节点");
+                }
+
                 _debugLog.Log("move", $"path found ({path.Count} nodes)");
                 _pathMoveTo!.InvokeAction(path, false);
             }
