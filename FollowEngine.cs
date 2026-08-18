@@ -599,7 +599,7 @@ public sealed class FollowEngine : IDisposable
         var old = _state; _state = newState;
         PauseReason = _state switch
         {
-            FollowState.Combat => "战斗中",
+            FollowState.Combat => "战斗姿态",
             FollowState.Paused => "手动暂停",
             FollowState.EmergencyStopped => "紧急停止",
             FollowState.TargetLost => "目标丢失",

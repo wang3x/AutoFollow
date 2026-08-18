@@ -94,9 +94,17 @@ public sealed class MiniWindow
         var isPausedLike = state is FollowState.Combat or FollowState.Paused or FollowState.EmergencyStopped or FollowState.TargetLost;
         var distStr = FormatHelper.DistCompact(dist);
 
-        ImGui.SetNextWindowSize(new Vector2(320, 0), ImGuiCond.FirstUseEver);
+        // 固定窗口大小：宽度恒定（含状态预留 + 安全余量），高度按折叠状态计算
+        var fhCalc = ImGui.GetFrameHeight();
+        var nameWCalc = ImGui.CalcTextSize("字字字字").X;
+        var distWCalc = ImGui.CalcTextSize(" 123.4y").X; // 距离最宽格式：3位整数+1位小数+小数点+单位
+        var statusWCalc = ImGui.CalcTextSize("(跟)").X; // 引擎状态最宽（单字）
+        var contentW = fhCalc + 6 + nameWCalc + 5 + distWCalc + 5 + statusWCalc + 5 + 66 + 5 + 24;
+        var winW = contentW + ImGui.GetStyle().WindowPadding.X * 2 + ImGui.GetStyle().WindowBorderSize * 2 + 6; // +6 安全余量，防止折叠按钮被裁剪
+        var winH = (_flagExpanded ? 4 * fhCalc + 8 : fhCalc) + ImGui.GetStyle().WindowPadding.Y * 2;
+        ImGui.SetNextWindowSize(new Vector2(winW, winH), ImGuiCond.Always);
         var open = IsOpen;
-        if (!ImGui.Begin("跟随", ref open, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.AlwaysAutoResize))
+        if (!ImGui.Begin("跟随", ref open, ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoTitleBar | ImGuiWindowFlags.NoResize))
         { IsOpen = open; ImGui.End(); return; }
         IsOpen = open;
 
@@ -185,28 +193,56 @@ public sealed class MiniWindow
         ImGui.SetCursorScreenPos(new Vector2(pos.X + fh + 6, pos.Y));
         ImGui.AlignTextToFramePadding();
 
-        // 目标名 — 主色
+        // 目标名 — 固定 4 字宽度（悬停显示全称，无目标时保持空位，窗口宽度恒定）
+        var nameText = target ?? "";
+        var nameW = ImGui.CalcTextSize("字字字字").X;
+        var nameDisplay = string.IsNullOrEmpty(nameText) ? "" : TruncateText(nameText, nameW);
         ImGui.PushStyleColor(ImGuiCol.Text, FollowColors.TextPrimary);
-        ImGui.TextUnformatted(target ?? "无目标");
+        if (nameDisplay.Length > 0)
+        {
+            ImGui.TextUnformatted(nameDisplay);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(nameText);
+            // 精确补齐到固定 4 字宽度（不依赖空格宽度，避免英文名超宽）
+            ImGui.SameLine(0, 0);
+            var nameRemain = (pos.X + fh + 6 + nameW) - ImGui.GetItemRectMax().X;
+            if (nameRemain > 0)
+                ImGui.Dummy(new Vector2(nameRemain, 0));
+        }
+        else
+        {
+            ImGui.Dummy(new Vector2(nameW, fh)); // 无目标：固定 4 字空位
+        }
         ImGui.PopStyleColor();
 
-        // 距离 — 分区色
-        ImGui.SameLine();
+        // 距离 — 分区色（固定宽度，避免距离值变化导致按钮位置移动）
+        ImGui.SameLine(0, 5);
         var distColor = FollowColors.GetDistColor(dist);
         ImGui.PushStyleColor(ImGuiCol.Text, distColor);
         ImGui.TextUnformatted(" " + distStr + "y");
         ImGui.PopStyleColor();
+        ImGui.SameLine(0, 0);
+        var distRemain = (pos.X + fh + 6 + nameW + 5 + distWCalc) - ImGui.GetItemRectMax().X;
+        if (distRemain > 0)
+            ImGui.Dummy(new Vector2(distRemain, 0));
 
-        // 引擎暂停原因
-        if (_engineStatus != null && !isIdle && isPausedLike)
+        // 引擎状态区域 — 始终预留固定宽度（无状态时 Dummy 占位），保证按钮位置恒定
+        var hasStatus = _engineStatus != null && !isIdle && isPausedLike;
+        ImGui.SameLine(0, 5);
+        if (hasStatus)
         {
-            ImGui.SameLine();
             ImGui.PushStyleColor(ImGuiCol.Text, FollowColors.TextAccent);
-            ImGui.TextUnformatted($"({_engineStatus})");
+            ImGui.TextUnformatted("(" + ShortenStatus(_engineStatus!) + ")");
             ImGui.PopStyleColor();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip(_engineStatus);
+        }
+        else
+        {
+            ImGui.Dummy(new Vector2(statusWCalc, fh));
         }
 
-        ImGui.SameLine(0, fh);
+        ImGui.SameLine(0, 5);
 
         // ════════════════════════════════════════
         //  主按钮 — 动作标签 + 颜色
@@ -259,7 +295,7 @@ public sealed class MiniWindow
         // ════════════════════════════════════════
         //  折叠按钮 [▼]/[▲] — 在主按钮右侧
         // ════════════════════════════════════════
-        ImGui.SameLine(0, 19);
+        ImGui.SameLine(0, 5);
         var foldLabel = _flagExpanded ? "▲" : "▼";
         if (ImGui.Button(foldLabel, new Vector2(24, 0)))
             _flagExpanded = !_flagExpanded;
@@ -315,6 +351,32 @@ public sealed class MiniWindow
         }
 
         ImGui.End();
+    }
+
+    /// <summary>暂停原因 → 单字缩写（内部完整原因不变，悬停 tooltip 显示完整文本）</summary>
+    private static string ShortenStatus(string status) => status switch
+    {
+        "战斗姿态" or "战斗中" or "Combat"  => "战",
+        "手动暂停" or "Paused"              => "停",
+        "紧急停止" or "EmergencyStopped"     => "急",
+        "目标丢失" or "TargetLost"           => "丢",
+        "地图黑名单"                          => "黑",
+        "副本已完成"                          => "完",
+        "用户命令"                            => "停",
+        "场景切换" or "BetweenAreas"         => "图",
+        "已死亡" or "Dead"                   => "死",
+        _ => status.Length > 1 ? status[..1] : status,
+    };
+
+    /// <summary>文本超宽时截断加省略号，保证窗口宽度恒定</summary>
+    private static string TruncateText(string text, float maxWidth)
+    {
+        if (ImGui.CalcTextSize(text).X <= maxWidth) return text;
+        if (text.Length <= 1) return text;
+        var t = text;
+        while (t.Length > 1 && ImGui.CalcTextSize(t + "…").X > maxWidth)
+            t = t[..^1];
+        return t + "…";
     }
 
     private static void FlagButton(ImDrawListPtr dl, string label, float w, float fh,
