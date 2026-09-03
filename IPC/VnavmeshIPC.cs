@@ -63,8 +63,8 @@ public sealed class VnavmeshIPC : IDisposable
         }
     }
 
-    /// <summary>后台寻路+移动（带版本号防重叠，只应用最新结果）</summary>
-    public void MoveToPositionAsync(Vector3 from, Vector3 destination)
+    /// <summary>后台寻路+移动（带版本号防重叠，只应用最新结果）。主目标寻路失败时自动改用 fallbackDestination（如穿线延伸点不可达时退回原最后坐标）。</summary>
+    public void MoveToPositionAsync(Vector3 from, Vector3 destination, Vector3? fallbackDestination = null)
     {
         if (!IsAvailable) { _debugLog.Log("IPC", "vnavmesh unavailable"); return; }
 
@@ -77,10 +77,20 @@ public sealed class VnavmeshIPC : IDisposable
             {
                 var pathTask = _navPathfind!.InvokeFunc(from, destination, false);
                 var path = await pathTask;
+                // 主目标寻路失败 → fallback 备用目标（如延伸点越界时退回原最后坐标）
                 if (path == null || path.Count == 0)
                 {
-                    _debugLog.Log("move", "no path found");
-                    return;
+                    if (fallbackDestination != null)
+                    {
+                        _debugLog.Log("move", $"primary path not found, fallback to ({fallbackDestination.Value.X:F1},{fallbackDestination.Value.Y:F1},{fallbackDestination.Value.Z:F1})");
+                        pathTask = _navPathfind!.InvokeFunc(from, fallbackDestination.Value, false);
+                        path = await pathTask;
+                    }
+                    if (path == null || path.Count == 0)
+                    {
+                        _debugLog.Log("move", "no path found");
+                        return;
+                    }
                 }
                 // 如果在此期间有更新的版本，丢弃当前结果防重叠
                 if (version != _pathfindVersion)
@@ -119,6 +129,15 @@ public sealed class VnavmeshIPC : IDisposable
     public bool IsMoving()
     {
         try { return _pathIsRunning?.InvokeFunc() ?? false; } catch { return false; }
+    }
+
+    // ── 其他 ──
+
+    /// <summary>使所有挂起的寻路结果失效（防止旧 MoveTo 结果晚到覆盖后续移动）</summary>
+    public void InvalidatePaths()
+    {
+        Interlocked.Increment(ref _pathfindVersion);
+        _debugLog.Log("move", "invalidate pending paths");
     }
 
     public void Dispose() { Stop(); }

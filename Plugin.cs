@@ -108,7 +108,8 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             onMoveFlag: () => _commandManager.ProcessCommand("/vnav moveflag"),
             onFlyFlag: () => { _commandManager.ProcessCommand("/mount"); _commandManager.ProcessCommand("/vnav flyflag"); },
             onStop: () => _commandManager.ProcessCommand("/vnav stop"),
-            getTerritory: () => TryGetTerritory(_clientState));
+            getTerritory: () => TryGetTerritory(_clientState),
+            getKeyState: vk => _keyState.IsVirtualKeyValid(vk) && _keyState[vk]);
 
         _miniWindow = new MiniWindow(
             _followConfig,

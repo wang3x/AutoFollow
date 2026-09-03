@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin.Services;
 using AutoFollow.Conditions;
@@ -14,10 +15,12 @@ public sealed class FollowEngine : IDisposable
     private enum InertiaPhase
     {
         None,
-        /// <summary>先跑向最后已知目标坐标</summary>
+        /// <summary>目标消失，前往最后已知坐标</summary>
         ToLastKnown,
-        /// <summary>到达后沿面朝方向惯移 1.5s / 总窗口 2s</summary>
-        FaceForward,
+        /// <summary>被过图线挡住，强制向前推进穿线（期间忽略目标重现，防止跨图被打断）</summary>
+        CrossLinePush,
+        /// <summary>到达后待命，等目标重现</summary>
+        Waiting,
     }
 
     private readonly IObjectTable _objectTable;
@@ -38,14 +41,16 @@ public sealed class FollowEngine : IDisposable
     private DateTime _followStartTime;
     private bool _wasInCombat;
     private Vector3? _lastKnownTargetPos;
-    private float _lastScanDistance = float.MaxValue;
 
-    // ── 两段式惯移状态 ──
+    // ── 惯移状态（目标消失 → 去最后已知点 → 待命） ──
     private InertiaPhase _inertiaPhase = InertiaPhase.None;
-    private Vector3? _inertiaLastKnownDest;
-    private DateTime? _faceMoveStopTime;   // 面朝惯移截止（1.5s）
-    private DateTime? _facePhaseExpiry;    // 面朝阶段总窗口（2s）
-    private DateTime _inertiaStartTime;    // 整段惯移开始，用于超时兜底
+    private Vector3? _inertiaLastKnownDest;   // 原最后坐标（到达基准）
+    private Vector3? _inertiaMoveDest;        // 实际移动目标（沿移动方向延伸点）
+    private Vector3? _prevKnownTargetPos;     // 目标上一帧位置（用于计算移动方向）
+    private DateTime _pushStartTime;          // 穿线推进开始时间
+    private DateTime _lastAutoRunPress;       // 上次自动奔跑键注入时间（节流）
+    private bool _keyHeld;                    // 按住型穿线键当前是否处于按住状态
+    private Vector3? _pushDirection;          // 穿线推进方向（水平）
 
     /// <summary>当前暂停原因的友好描述，供 UI 显示</summary>
     public string? PauseReason { get; private set; }
@@ -53,11 +58,8 @@ public sealed class FollowEngine : IDisposable
     private const double OutOfCombatDelay = 1.0;
     private const double StartupGracePeriod = 2.0;
     private const float LastKnownArriveRange = 3f;   // 视为到达最后已知点
-    private const float InertiaCancelRange = 100f;  // 目标 ≤100y 取消惯移
-    private const double FaceMoveSeconds = 1.5;
-    private const double FacePhaseSeconds = 2.0;
-    private const double ToLastKnownTimeoutSeconds = 30.0; // 第一阶段超时
-    private const float FaceForwardDistance = 30f;
+    private const float InertiaCancelRange = 100f;  // 目标 ≤100y 取消待命恢复跟随
+    private const double CrossLinePushSeconds = 2.0; // 穿线推进时长
 
     public FollowState State => _state;
     public string? TargetName => _followTargetName;
@@ -89,7 +91,7 @@ public sealed class FollowEngine : IDisposable
 
     private void OnTick(IFramework _)
     {
-        // ── 两段式惯移（先最后已知点 → 再面朝惯移） ──
+        // ── 惯移（目标消失 → 去最后已知点 → 待命等重现） ──
         if (_inertiaPhase != InertiaPhase.None)
         {
             HandleInertia();
@@ -150,17 +152,18 @@ public sealed class FollowEngine : IDisposable
             return;
         }
 
-        var now = DateTime.UtcNow;
-        if ((now - _lastUpdate).TotalSeconds < _config.ScanInterval) return;
-        _lastUpdate = now;
-
+        // ── 每帧：解析目标、刷新最后已知点、目标丢失立即检测 ──
+        var player = _objectTable[0];
+        if (player == null) return;
         var target = ResolveTarget();
+
         if (target == null)
         {
+            // 目标丢失 → 立即用最后一帧坐标作为移动目标（比 1s 扫描更准确及时）
             if (_config.ContinueOnTargetLost)
             {
-                // 目标传送后常从 ObjectTable 消失：先去最后已知点，到了再面朝惯移
-                BeginTwoPhaseInertia("目标丢失，先去最后已知点");
+                // 目标传送后常从 ObjectTable 消失：去最后已知点，到了停下待命
+                BeginInertia("目标丢失，前往最后已知点");
             }
             else
             {
@@ -170,25 +173,17 @@ public sealed class FollowEngine : IDisposable
             return;
         }
 
-        var player = _objectTable[0];
-        if (player == null) return;
-
         var targetPos = target.Position;
-        _lastKnownTargetPos = targetPos;
+        if (_lastKnownTargetPos != null)
+            _prevKnownTargetPos = _lastKnownTargetPos;
+        _lastKnownTargetPos = targetPos;   // 每帧刷新最后已知点，惯移起点始终最新
         var playerPos = player.Position;
         DistanceToTarget = Vector3.Distance(playerPos, targetPos);
 
-        // 远距离目标检测：目标突然从近距跳到 >100y（仍在表内但已瞬移）
-        if (DistanceToTarget > InertiaCancelRange && _lastScanDistance <= InertiaCancelRange
-            && _inertiaPhase == InertiaPhase.None)
-        {
-            BeginTwoPhaseInertia($"目标突然远距({DistanceToTarget:F0}y，上次{_lastScanDistance:F0}y)，先去最后已知点");
-            _lastScanDistance = DistanceToTarget;
-            return;
-        }
-
-        // 目标在 ≤100y → 更新距离缓存
-        _lastScanDistance = DistanceToTarget;
+        // ── 每秒扫描决策（暂停/恢复/疾跑/发送移动） ──
+        var now = DateTime.UtcNow;
+        if ((now - _lastUpdate).TotalSeconds < _config.ScanInterval) return;
+        _lastUpdate = now;
 
         // 暂停条件：距离≤进入值 + 已过启动保护期
         var graceRemaining = StartupGracePeriod - (DateTime.UtcNow - _followStartTime).TotalSeconds;
@@ -311,61 +306,73 @@ public sealed class FollowEngine : IDisposable
     }
 
     /// <summary>
-    /// 启动两段式惯移：
-    /// 1) 跑向最后已知目标坐标
-    /// 2) 到达后沿面朝方向再惯移 1.5s（总窗口 2s）
-    /// 无最后已知点时直接进入面朝阶段。
+    /// 目标消失 → 立即用最后一帧的目标坐标作为移动目标（一次刷新）。
+    /// 有最后已知点且不在附近 → 前往该点；到达后停下待命等目标重现。
     /// </summary>
-    private void BeginTwoPhaseInertia(string reason)
+    private void BeginInertia(string reason)
     {
         var player = _objectTable[0];
         if (player == null) return;
 
         ClearInertiaState();
-        _inertiaStartTime = DateTime.UtcNow;
         _debugLog.Log("状态", reason);
 
         if (_lastKnownTargetPos != null)
         {
-            var dest = _lastKnownTargetPos.Value;
-            // 已经在最后已知点附近 → 直接面朝惯移
-            if (Vector3.Distance(player.Position, dest) <= LastKnownArriveRange)
+            var lastKnown = _lastKnownTargetPos.Value;
+
+            // 计算穿线推进方向：优先目标移动方向（上一帧→最后一帧），
+            // 目标静止时用 玩家出发位置→最后坐标 方向（即目标消失前的行进方向，通常指向过图线）
+            _pushDirection = null;
+            if (_prevKnownTargetPos != null)
             {
-                StartFaceForwardPhase(player, "已在最后已知点附近，开始面朝惯移");
+                var d = lastKnown - _prevKnownTargetPos.Value;
+                d.Y = 0;
+                if (d.LengthSquared() > 0.25f)
+                    _pushDirection = Vector3.Normalize(d);
+            }
+            if (_pushDirection == null)
+            {
+                var d = lastKnown - player.Position;
+                d.Y = 0;
+                if (d.LengthSquared() > 0.25f)
+                    _pushDirection = Vector3.Normalize(d);
+            }
+
+            // 已经在最后已知点附近 → 若目标仍未重现且有推进方向，直接穿线推进
+            if (Vector3.Distance(player.Position, lastKnown) <= LastKnownArriveRange)
+            {
+                if (_pushDirection != null)
+                {
+                    BeginCrossLinePush(player);
+                    return;
+                }
+                EnterWaiting("已在最后已知点附近，停下待命等目标重现");
                 return;
             }
 
+            // 前往最后坐标（vnav 寻路）；穿线由到达后的自动奔跑完成
+            var moveDest = lastKnown;
             _inertiaPhase = InertiaPhase.ToLastKnown;
-            _inertiaLastKnownDest = dest;
+            _inertiaLastKnownDest = lastKnown;
+            _inertiaMoveDest = moveDest;
             if (_vnavmesh.IsAvailable)
-                _vnavmesh.MoveTo(player.Position, dest);
-            _debugLog.Log("状态", $"惯移阶段1：前往最后已知点 ({dest.X:F1},{dest.Y:F1},{dest.Z:F1})");
+                _vnavmesh.MoveTo(player.Position, moveDest, lastKnown);
+            _debugLog.Log("状态", $"前往最后坐标 ({moveDest.X:F1},{moveDest.Y:F1},{moveDest.Z:F1})");
         }
         else
         {
-            StartFaceForwardPhase(player, "无最后已知点，直接面朝惯移");
+            // 无最后已知点 → 直接待命
+            EnterWaiting("无最后已知点，停下待命等目标重现");
         }
     }
 
-    private void StartFaceForwardPhase(IGameObject player, string reason)
-    {
-        var now = DateTime.UtcNow;
-        var rot = player.Rotation;
-        var forward = new Vector3((float)Math.Sin(rot), 0, (float)Math.Cos(rot));
-        if (forward.LengthSquared() > 0) forward = Vector3.Normalize(forward);
-        else forward = Vector3.UnitZ;
-        var ahead = player.Position + forward * FaceForwardDistance;
-
-        _inertiaPhase = InertiaPhase.FaceForward;
-        _faceMoveStopTime = now + TimeSpan.FromSeconds(FaceMoveSeconds);
-        _facePhaseExpiry = now + TimeSpan.FromSeconds(FacePhaseSeconds);
-        _debugLog.Log("状态", reason);
-        if (_vnavmesh.IsAvailable)
-            _vnavmesh.MoveTo(player.Position, ahead);
-    }
-
     /// <summary>
-    /// 惯移每帧处理。中途若目标重现且距离≤100y，立即取消并恢复跟随。
+    /// 惯移每帧处理：
+    /// - CrossLinePush：强制向前推进穿线（期间忽略目标重现，防止跨图步骤被打断）
+    /// - 目标重现且距离≤100y → 立即恢复跟随（ToLastKnown/Waiting 阶段）
+    /// - ToLastKnown：前往最后已知点；vnav 停止且未到达 → 判定过图线阻挡，开始穿线推进
+    /// - Waiting：保持待命，只等目标重现
     /// </summary>
     private void HandleInertia()
     {
@@ -379,14 +386,43 @@ public sealed class FollowEngine : IDisposable
         var player = _objectTable[0];
         if (player == null) return;
 
+        // ── CrossLinePush 阶段：自动奔跑穿线（期间忽略目标重现） ──
+        if (_inertiaPhase == InertiaPhase.CrossLinePush)
+        {
+            var now = DateTime.UtcNow;
+            if ((now - _pushStartTime).TotalSeconds < CrossLinePushSeconds)
+            {
+                // 面向推进方向 + 启动自动奔跑（沿角色朝向直线跑，不受镜头/navmesh 约束）
+                FacePushDirection(player);
+                StartAutoRun();
+                return;
+            }
+
+            // 推进超时结束
+            StopAutoRun();
+            _debugLog.Log("状态", "穿线推进结束");
+            if (ResolveTarget() != null)
+            {
+                ClearInertiaState();
+                _lastUpdate = DateTime.MinValue;
+                ResumeFollow();
+            }
+            else
+            {
+                EnterWaiting("穿线推进结束，停下待命等目标重现");
+            }
+            return;
+        }
+
         // ── 取消条件：目标重新出现 且 距离 ≤100y → 恢复跟随 ──
         var target = ResolveTarget();
         if (target != null)
         {
             var dist = Vector3.Distance(player.Position, target.Position);
             DistanceToTarget = dist;
+            if (_lastKnownTargetPos != null)
+                _prevKnownTargetPos = _lastKnownTargetPos;
             _lastKnownTargetPos = target.Position;
-            _lastScanDistance = dist;
 
             if (dist <= InertiaCancelRange)
             {
@@ -396,89 +432,184 @@ public sealed class FollowEngine : IDisposable
                 ResumeFollow();
                 return;
             }
-            // 目标在表内但仍 >100y：继续惯移（可能是瞬移后仍可见）
+            // 目标在表内但仍 >100y：继续前往/待命（瞬移后仍可见）
         }
-
-        var now = DateTime.UtcNow;
 
         if (_inertiaPhase == InertiaPhase.ToLastKnown)
         {
-            // 超时兜底：太久到不了最后已知点
-            if ((now - _inertiaStartTime).TotalSeconds >= ToLastKnownTimeoutSeconds)
+            var lastKnown = _inertiaLastKnownDest;
+            if (lastKnown == null)
             {
-                _debugLog.Log("状态", "前往最后已知点超时，改面朝惯移");
-                StartFaceForwardPhase(player, "超时后开始面朝惯移");
+                EnterWaiting("无目的地，停下待命等目标重现");
                 return;
             }
 
-            var dest = _inertiaLastKnownDest;
-            if (dest == null)
+            var moveDest = _inertiaMoveDest ?? lastKnown.Value;
+
+            // 到达延伸点或原坐标（或 vnav 已停且够近）
+            var distToMove = Vector3.Distance(player.Position, moveDest);
+            var distToLast = Vector3.Distance(player.Position, lastKnown.Value);
+            if (distToMove <= LastKnownArriveRange || distToLast <= LastKnownArriveRange
+                || (!_vnavmesh.IsMoving && (distToMove <= LastKnownArriveRange * 2f || distToLast <= LastKnownArriveRange * 2f)))
             {
-                StartFaceForwardPhase(player, "无最后已知点，开始面朝惯移");
+                // 到达后目标仍未重现：若有推进方向（朝向目标消失前的行进方向）→ 穿线推进跨过过图线
+                if (_pushDirection != null)
+                {
+                    BeginCrossLinePush(player);
+                    return;
+                }
+                EnterWaiting($"到达移动点({distToMove:F1}y/原坐标{distToLast:F1}y)，停下待命等目标重现");
                 return;
             }
 
-            // 到达（或 vnav 已停且够近）→ 进入面朝阶段
-            var distToLast = Vector3.Distance(player.Position, dest.Value);
-            if (distToLast <= LastKnownArriveRange || (!_vnavmesh.IsMoving && distToLast <= LastKnownArriveRange * 2f))
+            // vnav 已停止但离目标点仍远 → 判定被过图线/障碍挡住 → 强制向前推进穿线
+            if (!_vnavmesh.IsMoving)
             {
-                StartFaceForwardPhase(player, $"到达最后已知点({distToLast:F1}y)，开始面朝惯移");
+                BeginCrossLinePush(player);
                 return;
             }
 
-            // 仍在路上：若 vnav 停了则补发一次路径
-            if (!_vnavmesh.IsMoving && _vnavmesh.IsAvailable)
-                _vnavmesh.MoveTo(player.Position, dest.Value);
+            // 仍在移动中：等待 vnav 到达
             return;
         }
 
-        if (_inertiaPhase == InertiaPhase.FaceForward)
+        // Waiting：什么都不做，等待目标重现（上方检测已处理接回）
+    }
+
+    /// <summary>开始穿线推进：记录推进方向，面向该方向后启动自动奔跑 2 秒跨越过图线</summary>
+    private void BeginCrossLinePush(IGameObject player)
+    {
+        _inertiaPhase = InertiaPhase.CrossLinePush;
+        _pushStartTime = DateTime.UtcNow;
+        _lastAutoRunPress = DateTime.MinValue;
+        _keyHeld = false;
+
+        // 推进方向：BeginInertia 已算好的优先（目标移动方向/玩家→最后坐标方向），
+        // 为空时才用 玩家→移动目标 方向兜底
+        if (_pushDirection == null)
         {
-            if (_faceMoveStopTime != null && now < _faceMoveStopTime.Value)
+            var dest = _inertiaMoveDest ?? _inertiaLastKnownDest;
+            if (dest != null)
             {
-                // 1.5s 内保持面朝移动
-                return;
+                var d = dest.Value - player.Position;
+                d.Y = 0;
+                if (d.LengthSquared() > 0.25f)
+                    _pushDirection = Vector3.Normalize(d);
             }
+        }
 
-            if (_facePhaseExpiry != null && now < _facePhaseExpiry.Value)
-            {
-                // 1.5s~2s：停下等待窗口结束
-                if (_vnavmesh.IsMoving) _vnavmesh.Stop();
-                return;
-            }
+        _vnavmesh.Stop();
+        // 使挂起的 MoveTo 寻路结果失效，防止晚到的旧路径干扰自动奔跑
+        _vnavmesh.InvalidatePaths();
 
-            // 2s 窗口结束
-            FinishInertia();
+        if (_pushDirection != null)
+        {
+            _debugLog.Log("状态", "vnav 停止但未到达，判定过图线阻挡，面向推进方向后自动奔跑穿线(2s)");
+        }
+        else
+        {
+            _debugLog.Log("状态", "vnav 停止但未到达，无推进方向，直接待命");
+            EnterWaiting("无推进方向，停下待命等目标重现");
         }
     }
 
-    /// <summary>惯移完整结束：有目标则恢复跟随，无目标则按丢失策略收尾</summary>
-    private void FinishInertia()
+    /// <summary>每帧面向推进方向（自动奔跑沿角色朝向直线移动，必须先对准方向）</summary>
+    private unsafe void FacePushDirection(IGameObject player)
     {
-        ClearInertiaState();
-        _lastUpdate = DateTime.MinValue;
+        if (_pushDirection == null) return;
+        var yaw = (float)Math.Atan2(_pushDirection.Value.X, _pushDirection.Value.Z); // FFXIV 朝向角：0=北，顺时针
+        var go = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)player.Address;
+        if (go != null)
+            go->Rotation = yaw;
+    }
 
-        if (ResolveTarget() != null)
+    // ── Win32 原生按键注入（绕开卫月禁止模拟按键的限制，真实按键驱动角色） ──
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, nuint dwExtraInfo);
+
+    /// <summary>Win32 按键按下（KEYDOWN）</summary>
+    private void PressKey()
+    {
+        try { keybd_event((byte)_config.CrossLineKey, 0, 0, 0); } catch { }
+    }
+
+    /// <summary>Win32 按键松开（KEYUP）</summary>
+    private void ReleaseKey()
+    {
+        try { keybd_event((byte)_config.CrossLineKey, 0, KEYEVENTF_KEYUP, 0); } catch { }
+    }
+
+    /// <summary>启动穿线移动：按住型键按住；自动奔跑型键点按触发</summary>
+    private void StartAutoRun()
+    {
+        if (_config.CrossLineKeyIsHold)
         {
-            _debugLog.Log("状态", "惯移结束，恢复跟随");
-            ResumeFollow();
+            // 按住型（如 W）：持续按住直到推进结束
+            if (_keyHeld) return;
+            PressKey();
+            _keyHeld = true;
+            _debugLog.Log("move", $"穿线键按住（hold 型 {_config.CrossLineKey}）");
             return;
         }
 
-        _debugLog.Log("状态", "惯移结束仍无目标，停止移动");
+        // 自动奔跑型（如 R）：游戏已开启则无需按，否则点按一次（500ms 节流）
+        if (IsGameAutoRunning()) return;
+        var now = DateTime.UtcNow;
+        if ((now - _lastAutoRunPress).TotalMilliseconds < 500) return;
+        _lastAutoRunPress = now;
+        PressKey();
+        ReleaseKey();
+        _debugLog.Log("move", $"auto-run 键点按（{_config.CrossLineKey}）");
+    }
+
+    /// <summary>停止穿线移动：按住型松键；自动奔跑型点按取消</summary>
+    private void StopAutoRun()
+    {
+        if (_config.CrossLineKeyIsHold)
+        {
+            // 按住型：直接松开
+            if (_keyHeld)
+            {
+                ReleaseKey();
+                _keyHeld = false;
+                _debugLog.Log("move", "穿线键松开（hold 型）");
+            }
+            return;
+        }
+
+        // 自动奔跑型：游戏仍开着才点按取消
+        if (!IsGameAutoRunning()) return;
+        PressKey();
+        ReleaseKey();
+        _debugLog.Log("move", "auto-run 键取消");
+    }
+
+    /// <summary>读取游戏原生自动奔跑状态（InputManager.IsAutoRunning）</summary>
+    private static unsafe bool IsGameAutoRunning()
+    {
+        try { return FFXIVClientStructs.FFXIV.Client.Game.Control.InputManager.IsAutoRunning(); }
+        catch { return false; }
+    }
+
+    /// <summary>进入待命：停止移动，等目标重现（由 HandleInertia 自动接回跟随）</summary>
+    private void EnterWaiting(string reason)
+    {
+        StopAutoRun();   // 保险：停止自动奔跑
+        _inertiaPhase = InertiaPhase.Waiting;
+        _inertiaLastKnownDest = null;
+        _inertiaMoveDest = null;
+        _debugLog.Log("状态", reason);
         if (_vnavmesh.IsMoving) _vnavmesh.Stop();
-        if (_config.PauseOnTargetLost)
-            SetTarget(null);
-        else
-            SetState(FollowState.Idle);
     }
 
     private void ClearInertiaState()
     {
+        StopAutoRun();   // 保险：停止自动奔跑
         _inertiaPhase = InertiaPhase.None;
         _inertiaLastKnownDest = null;
-        _faceMoveStopTime = null;
-        _facePhaseExpiry = null;
+        _inertiaMoveDest = null;
+        _pushDirection = null;
     }
 
     private bool CheckBlacklistedMap()
@@ -510,7 +641,7 @@ public sealed class FollowEngine : IDisposable
             var found = _objectTable.FirstOrDefault(o =>
                 o.Name.TextValue == _followTargetName &&
                 o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc);
-            if (found != null) { _followTargetId = found.ObjectIndex; return found; }
+            if (found != null) { _followTargetId = found.EntityId; return found; }
         }
         return null;
     }
@@ -530,7 +661,7 @@ public sealed class FollowEngine : IDisposable
         _followTargetName = playerName; _followTargetId = null; _lastSentPosition = null;
         ClearInertiaState();
         var target = ResolveTarget();
-        if (target != null) _followTargetId = target.ObjectIndex;
+        if (target != null) _followTargetId = target.EntityId;
         else _debugLog.Log("命令", $"设目标{playerName}但未找到");
 
         _debugLog.Log("命令", $"设置跟随目标: {playerName}");

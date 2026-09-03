@@ -29,6 +29,9 @@ public sealed class DebugWindow
     private string _filter = "";
     private bool _waitingForKey;
     private string _hotkeyButtonLabel = "";
+    // 按键捕获：用 IKeyState（真实游戏按键状态）检测上升沿，不受 ImGui 焦点限制
+    private readonly Func<Dalamud.Game.ClientState.Keys.VirtualKey, bool>? _getKeyState;
+    private readonly bool[] _prevKeyDown = new bool[256];
     private float _manualX, _manualY, _manualZ;
     private DateTime _lastScan;
 
@@ -39,13 +42,15 @@ public sealed class DebugWindow
         Action<Vector3> onManualMove, Action onSave, Action onCommandReload,
         Func<FollowState> getState, Func<string?> getTargetName, Func<float> getDistance,
         Func<bool> getInCombat, Action onClearTarget,
-        Action onMoveFlag, Action onFlyFlag, Action onStop, Func<ushort?> getTerritory)
+        Action onMoveFlag, Action onFlyFlag, Action onStop, Func<ushort?> getTerritory,
+        Func<Dalamud.Game.ClientState.Keys.VirtualKey, bool>? getKeyState = null)
     {
         _log = log; _statusChecker = statusChecker; _config = config;
         _getPlayerPos = getPlayerPos; _getTargetPos = getTargetPos;
         _onManualMove = onManualMove; _onSave = onSave; _onCommandReload = onCommandReload;
         _getState = getState; _getTargetName = getTargetName; _getDistance = getDistance;
         _getInCombat = getInCombat; _onClearTarget = onClearTarget; _onMoveFlag = onMoveFlag; _onFlyFlag = onFlyFlag; _onStop = onStop; _getTerritory = getTerritory;
+        _getKeyState = getKeyState;
     }
 
     public void Draw()
@@ -288,9 +293,26 @@ public sealed class DebugWindow
         if (ImGui.CollapsingHeader("其他控制", ImGuiTreeNodeFlags.DefaultOpen))
         {
             var cont = _config.ContinueOnTargetLost;
-            if (ImGui.Checkbox("目标丢失后继续移动 1.5 秒##continueOnLost", ref cont))
+            if (ImGui.Checkbox("目标丢失后继续前往最后位置##continueOnLost", ref cont))
                 { _config.ContinueOnTargetLost = cont; _onSave(); }
-            ImGui.TextDisabled("跟随目标在视野内丢失时，自动沿原方向继续移动 1.5 秒再停止");
+            ImGui.TextDisabled("跟随目标消失时，自动前往其最后所在位置，到达后停下待命；目标重现(≤100y)自动接回跟随");
+            if (_config.ContinueOnTargetLost)
+            {
+                var crossKey = (int)_config.CrossLineKey;
+                ImGui.Text("穿线自动移动键:");
+                ImGui.SameLine();
+                DrawHotkeySelector("穿线键##crossLineKey", ref crossKey,
+                    vk => { _config.CrossLineKey = (Dalamud.Game.ClientState.Keys.VirtualKey)vk; _onSave(); });
+                ImGui.SameLine();
+                var hold = _config.CrossLineKeyIsHold;
+                if (ImGui.Checkbox("按住型##crossLineHold", ref hold))
+                    { _config.CrossLineKeyIsHold = hold; _onSave(); }
+                ImGui.TextDisabled(_config.CrossLineKeyIsHold
+                    ? "该键需持续按住才能移动（如 W），穿线期间一直按着，结束后松开"
+                    : "该键按一下即持续移动（如 R=自动奔跑），穿线期间按一次，结束后再按一次取消");
+                ImGui.TextColored(new Vector4(1f, 0.8f, 0.2f, 1f),
+                    "注意：穿线自动移动通过系统按键模拟实现，仅当游戏窗口保持在前台时才能生效。");
+            }
 
             var autoZone = _config.AutoFollowAfterZoneChange;
             if (ImGui.Checkbox("换图后自动恢复跟随##autoFollowZone", ref autoZone))
@@ -418,16 +440,75 @@ public sealed class DebugWindow
     private void DrawHotkeySelector(string label, ref int keyValue, Action<int> onSet)
     {
         var ck = (Dalamud.Game.ClientState.Keys.VirtualKey)keyValue;
-        var bl = _waitingForKey ? "按下按键..." : ck == Dalamud.Game.ClientState.Keys.VirtualKey.NO_KEY ? "未设置 (点击绑定)" : $"{ck}";
-        if (ImGui.Button(bl)) { _waitingForKey = !_waitingForKey; _hotkeyButtonLabel = label; }
+        var bl = _waitingForKey ? "按下按键... (ESC 取消)" : ck == Dalamud.Game.ClientState.Keys.VirtualKey.NO_KEY ? "未设置 (点击绑定)" : $"{ck}";
+
+        // 点击总是进入绑定状态（不再 toggle，避免卡在错误状态）
+        if (ImGui.Button(bl))
+        {
+            _waitingForKey = true;
+            _hotkeyButtonLabel = label;
+            Array.Clear(_prevKeyDown, 0, _prevKeyDown.Length); // 清历史，避免误判已按住的键
+        }
+
         if (_waitingForKey && _hotkeyButtonLabel == label)
         {
-            foreach (Dalamud.Game.ClientState.Keys.VirtualKey vk in Enum.GetValues<Dalamud.Game.ClientState.Keys.VirtualKey>())
+            // 用 IKeyState 真实按键状态做上升沿检测（不受 ImGui 焦点限制，游戏焦点下也能捕获）
+            if (_getKeyState != null)
             {
-                if (vk == Dalamud.Game.ClientState.Keys.VirtualKey.NO_KEY || vk == Dalamud.Game.ClientState.Keys.VirtualKey.CONTROL || vk == Dalamud.Game.ClientState.Keys.VirtualKey.MENU || vk == Dalamud.Game.ClientState.Keys.VirtualKey.SHIFT) continue;
-                if (ImGui.GetIO().KeysDown[(int)vk]) { onSet((int)vk); _waitingForKey = false; break; }
+                // ESC 取消
+                if (_getKeyState(Dalamud.Game.ClientState.Keys.VirtualKey.ESCAPE) && !_prevKeyDown[(int)Dalamud.Game.ClientState.Keys.VirtualKey.ESCAPE])
+                {
+                    _waitingForKey = false;
+                    return;
+                }
+
+                foreach (var vk in Enum.GetValues<Dalamud.Game.ClientState.Keys.VirtualKey>())
+                {
+                    if (vk == Dalamud.Game.ClientState.Keys.VirtualKey.NO_KEY
+                        || vk == Dalamud.Game.ClientState.Keys.VirtualKey.CONTROL
+                        || vk == Dalamud.Game.ClientState.Keys.VirtualKey.MENU
+                        || vk == Dalamud.Game.ClientState.Keys.VirtualKey.SHIFT) continue;
+                    var idx = (int)vk;
+                    if (idx < 0 || idx >= _prevKeyDown.Length) continue;
+                    if (_getKeyState(vk) && !_prevKeyDown[idx])
+                    {
+                        keyValue = idx;       // 立即刷新按钮显示
+                        onSet(idx);
+                        _waitingForKey = false;
+                        return;
+                    }
+                }
             }
-            if (ImGui.GetIO().KeysDown[(int)Dalamud.Game.ClientState.Keys.VirtualKey.ESCAPE]) _waitingForKey = false;
+            else
+            {
+                // 回退：ImGui IO 检测（无 IKeyState 注入时）
+                if (ImGui.IsKeyPressed(ImGuiKey.Escape)) { _waitingForKey = false; return; }
+                foreach (var vk in Enum.GetValues<Dalamud.Game.ClientState.Keys.VirtualKey>())
+                {
+                    if (vk == Dalamud.Game.ClientState.Keys.VirtualKey.NO_KEY
+                        || vk == Dalamud.Game.ClientState.Keys.VirtualKey.CONTROL
+                        || vk == Dalamud.Game.ClientState.Keys.VirtualKey.MENU
+                        || vk == Dalamud.Game.ClientState.Keys.VirtualKey.SHIFT) continue;
+                    if (ImGui.IsKeyPressed((ImGuiKey)vk))
+                    {
+                        keyValue = (int)vk;
+                        onSet((int)vk);
+                        _waitingForKey = false;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // 记录本帧按键状态，用于下一帧上升沿检测
+        if (_waitingForKey && _getKeyState != null)
+        {
+            foreach (var vk in Enum.GetValues<Dalamud.Game.ClientState.Keys.VirtualKey>())
+            {
+                var idx = (int)vk;
+                if (idx >= 0 && idx < _prevKeyDown.Length)
+                    _prevKeyDown[idx] = _getKeyState(vk);
+            }
         }
     }
 
