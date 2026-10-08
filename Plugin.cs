@@ -105,7 +105,7 @@ _debugLog = new DebugLog();
 getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             getInCombat: () => _followEngine?.Conditions.InCombat ?? false,
             onClearTarget: () => _followEngine?.SetTarget(null),
-            onMoveFlag: () => _commandManager.ProcessCommand("/vnav moveflag"),
+            onMoveFlag: MoveFlagWithMount,
             onFlyFlag: () => { _commandManager.ProcessCommand("/mount"); _commandManager.ProcessCommand("/vnav flyflag"); },
             onStop: () => _commandManager.ProcessCommand("/vnav stop"),
             getTerritory: () => TryGetTerritory(_clientState),
@@ -147,7 +147,7 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
                 } catch { }
                 return null;
             },
-            onMoveFlag: () => _commandManager.ProcessCommand("/vnav moveflag"),
+            onMoveFlag: MoveFlagWithMount,
             onFlyFlag: () => {
                 // 先读旗标（无论是否上坐骑，都需要区域检测）
                 var flagInfo = ReadFlagMarker();
@@ -706,6 +706,26 @@ return false;
         catch { }
 
         return null;
+    }
+
+    /// <summary>步行至flag：优先上坐骑（读条期间可移动，无需等待），已在坐骑则直接走</summary>
+    private void MoveFlagWithMount()
+    {
+        if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
+        {
+            // 已在坐骑上 → 直接地面移动
+            _commandManager.ProcessCommand("/vnav moveflag");
+            return;
+        }
+
+        // 不在坐骑上 → 触发上坐骑，同时立即开始移动（读条期间可正常移动，无需轮询等待）
+        _vnavmesh.Stop();
+        unsafe
+        {
+            var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
+            if (am != null) am->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.Mount, 1);
+        }
+        _commandManager.ProcessCommand("/vnav moveflag");
     }
 
     /// <summary>轮询检测坐骑是否就绪，成功→飞行，超时→步行回退</summary>
