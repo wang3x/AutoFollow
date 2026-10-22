@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Dalamud.Game.ClientState.Keys;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
@@ -253,7 +253,7 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         // 自动接受传送邀请
         _framework.Update += CheckTeleportInvitation;
 
-        // 副本通关后暂停跟随
+        // 副本通关后停止并复位到初始状态
         _dutyState.DutyCompleted += OnDutyCompleted;
 
         Log.Debug("首帧初始化完成");
@@ -304,18 +304,26 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         }
     }
 
-    /// <summary>副本通关后暂停跟随（BOSS击杀完毕、系统提示"副本已完成"时）</summary>
+    /// <summary>
+    /// 副本通关后停止跟随并复位到初始状态（BOSS击杀完毕、系统提示"副本已完成"时）：
+    /// 停寻路 → 清空跟随目标 → 迷你窗回到刚加载时的样子（按钮「跟随」、无状态、折叠区收起）。
+    /// </summary>
     private void OnDutyCompleted(IDutyStateEventArgs args)
     {
         if (!_followConfig.PauseOnDutyComplete) return;
         if (_followEngine == null) return;
-        // 只在引擎活跃时（跟随/追赶/战斗/目标丢失）才暂停+提示；空闲/已暂停/紧急停止直接忽略
+        // 只在引擎活跃时（跟随/追赶/战斗）才处理；空闲/已暂停/紧急停止直接忽略，不打扰用户
         if (_followEngine.State is not (FollowState.Following or FollowState.CatchingUp
-            or FollowState.Combat or FollowState.TargetLost))
+            or FollowState.Combat))
             return;
-        Log.Info("副本通关，暂停跟随");
-        Log.Notice("[强效跟随] 副本通关，已暂停跟随");
-        _followEngine.Pause("副本已完成");
+
+        Log.Info("副本通关，停止跟随并复位到初始状态");
+        // 用 Log.Print：受「启用聊天提示」控制，默认关闭时不再强制刷屏
+        Log.Print("[强效跟随] 副本通关，已停止跟随并清除目标");
+        _debugLog.Log("状态", "副本通关，停止跟随并复位到初始状态");   // 始终记入「指令日志」
+
+        _followEngine.ResetToIdle();     // 停跟随 + 清目标 + 状态回 Idle + 交还输出权
+        _miniWindow.ResetToInitial();    // 迷你窗复位：按钮「跟随」、状态清空、折叠区收起
     }
 
     /// <summary>每帧检测传送邀请确认框，自动点"是"</summary>

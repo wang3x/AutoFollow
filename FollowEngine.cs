@@ -41,6 +41,8 @@ public sealed class FollowEngine : IDisposable
     private DateTime _followStartTime;
     private bool _wasInCombat;
     private Vector3? _lastKnownTargetPos;
+    /// <summary>循环插件的输出权当前是否由本插件暂停（用于复位时只还原本插件动过的状态）</summary>
+    private bool _loopPausedByMe;
 
     // ── 惯移状态（目标消失 → 去最后已知点 → 待命） ──
     private InertiaPhase _inertiaPhase = InertiaPhase.None;
@@ -111,6 +113,7 @@ public sealed class FollowEngine : IDisposable
                 if (_vnavmesh.IsMoving) _vnavmesh.Stop();
                 // 进入战斗状态，恢复循环插件攻击（与 CombatEnterRange 检测相同职责）
                 _ipc.ResumeLoop();
+                _loopPausedByMe = false;
                 SetState(FollowState.Combat);
                 return;
             }
@@ -191,7 +194,7 @@ public sealed class FollowEngine : IDisposable
         {
             Log.Print($"[强效跟随] 距离≤{_config.CombatEnterRange}y，暂停跟随");
             _debugLog.Log("state", $"暂停跟随 距离≤{_config.CombatEnterRange}y");
-            _vnavmesh.Stop(); _ipc.ResumeLoop(); SetState(FollowState.Combat); return;
+            _vnavmesh.Stop(); _ipc.ResumeLoop(); _loopPausedByMe = false; SetState(FollowState.Combat); return;
         }
         // >30y 恢复跟随+暂停循环（Boss战不恢复）
         if (DistanceToTarget > _config.CombatExitRange && _state == FollowState.Combat)
@@ -302,6 +305,7 @@ public sealed class FollowEngine : IDisposable
         _lastSentPosition = null;
 
         _ipc.PauseLoop();
+        _loopPausedByMe = true;
         SetState(FollowState.Following);
     }
 
@@ -653,7 +657,7 @@ public sealed class FollowEngine : IDisposable
             _followTargetName = null; _followTargetId = null; _lastSentPosition = null;
             ClearInertiaState();
             SetState(FollowState.Idle); _vnavmesh.Stop();
-            Log.Print("[强效跟随] target cleared");
+            Log.Print("[强效跟随] 已清除跟随目标");
             _debugLog.Log("命令", "清除跟随目标");
             return;
         }
@@ -676,6 +680,39 @@ public sealed class FollowEngine : IDisposable
         if (_vnavmesh.IsAvailable) _vnavmesh.MoveTo(player.Position, dest);
     }
 
+    /// <summary>
+    /// 完全停止并复位到插件刚加载时的状态：
+    /// 停寻路、清惯移/穿线、清目标、状态回 Idle、把输出权交还给循环插件。
+    /// 与 Pause() 的区别：不发暂停循环命令，反而发恢复命令，让第三方输出插件回到插件未接管时的正常状态。
+    /// </summary>
+    public void ResetToIdle()
+    {
+        _debugLog.Log("cmd", "reset to idle");
+
+        ClearInertiaState();            // 清惯移/穿线阶段，松开穿线键
+        _vnavmesh.Stop();               // 停 vnavmesh 寻路
+        _sprint.Reset();                // 清疾跑标记
+
+        _followTargetName = null;       // 清跟随目标 → 迷你窗目标名/距离归零
+        _followTargetId = null;
+        _lastSentPosition = null;
+        _lastKnownTargetPos = null;
+        _prevKnownTargetPos = null;
+        DistanceToTarget = float.MaxValue;
+
+        _conditionManager.ManualResume();
+        IsEmergencyStopped = false;
+
+        // 只还原本插件动过的状态：没接管过就不要发恢复命令，否则会把用户原本关着的输出强行打开
+        if (_loopPausedByMe)
+        {
+            _ipc.ResumeLoop();
+            _loopPausedByMe = false;
+        }
+
+        SetState(FollowState.Idle);     // PauseReason 清空 + StopUpdate() 取消帧订阅
+    }
+
     public void EmergencyStop()
     {
         Log.Print("[强效跟随] 紧急停止");
@@ -683,6 +720,7 @@ public sealed class FollowEngine : IDisposable
         ClearInertiaState();
         SetState(FollowState.EmergencyStopped);
         _vnavmesh.Stop(); _sprint.Reset(); _ipc.PauseLoop();
+        _loopPausedByMe = true;
         IsEmergencyStopped = true;
     }
 
@@ -712,6 +750,7 @@ public sealed class FollowEngine : IDisposable
         ClearInertiaState();
         SetState(FollowState.Paused); _vnavmesh.Stop(); _sprint.Reset();
         _conditionManager.ManualPause(reason); _ipc.PauseLoop();
+        _loopPausedByMe = true;
     }
 
     public void Resume()
@@ -722,6 +761,7 @@ public sealed class FollowEngine : IDisposable
         ClearInertiaState();
         Start(); SetState(FollowState.Following);
         _ipc.ResumeLoop();
+        _loopPausedByMe = false;
     }
 
     private void SetState(FollowState newState)

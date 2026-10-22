@@ -325,9 +325,9 @@ public sealed class DebugWindow
             ImGui.TextDisabled("跟随中自动点「是」接受队友发起的跨区域传送邀请");
 
             var pauseDuty = _config.PauseOnDutyComplete;
-            if (ImGui.Checkbox("副本通关后暂停跟随##pauseOnDuty", ref pauseDuty))
+            if (ImGui.Checkbox("副本通关后停止并复位##pauseOnDuty", ref pauseDuty))
                 { _config.PauseOnDutyComplete = pauseDuty; _onSave(); }
-            ImGui.TextDisabled("通关副本（最后一个BOSS击杀）时立即暂停跟随，回到野外后可手动或勾选\"换图后自动恢复\"");
+            ImGui.TextDisabled("通关副本（最后一个BOSS击杀）时立即停止跟随、清空目标并恢复循环输出，迷你窗回到刚加载时的「跟随」状态");
         }
 
         // ── 疾跑/坐骑（默认关闭） ──

@@ -68,6 +68,17 @@ public sealed class MiniWindow
     /// <summary>由外部设置引擎状态描述（如"战斗中""目标丢失"），null 清除</summary>
     public void SetEngineStatus(string? status) => _engineStatus = status;
 
+    /// <summary>
+    /// 复位到插件刚加载时的初始状态：按钮回到「跟随」、清空引擎状态文案、折叠区收起。
+    /// 目标名/距离由引擎实时提供，引擎清空目标后自然显示空位。
+    /// </summary>
+    public void ResetToInitial()
+    {
+        _btnState = BtnState.Idle;
+        _engineStatus = null;
+        _flagExpanded = false;
+    }
+
     /// <summary>外部启动/停止跟随时同步按钮状态</summary>
     public void SyncBtnState(FollowState engineState)
     {
