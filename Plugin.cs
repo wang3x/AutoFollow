@@ -30,6 +30,7 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IAetheryteList _aetheryteList;
     private readonly IGameGui _gameGui;
     private readonly IDutyState _dutyState;
+    private readonly IPlayerState _playerState;
 
     private Configuration _config = null!;
     private FollowConfig _followConfig = null!;
@@ -60,7 +61,8 @@ private DateTime _flyMountStart;
         IKeyState keyState,
         IAetheryteList aetheryteList,
         IGameGui gameGui,
-        IDutyState dutyState)
+        IDutyState dutyState,
+        IPlayerState playerState)
     {
         _pi = pi;
         _commandManager = commandManager;
@@ -74,6 +76,7 @@ private DateTime _flyMountStart;
         _aetheryteList = aetheryteList;
         _gameGui = gameGui;
         _dutyState = dutyState;
+        _playerState = playerState;
 
         _config = Configuration.Load(_pi);
         _followConfig = _config.Follow;
@@ -226,7 +229,8 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             _objectTable, _framework,
             _followConfig, _conditionManager, _sprint,
             _ipc, _vnavmesh, _debugLog,
-            getTerritory: () => TryGetTerritory(_clientState));
+            getTerritory: () => TryGetTerritory(_clientState),
+            getPlayerRole: GetPlayerRole);
 
         _followEngine.OnStateChanged += (oldState, newState) =>
         {
@@ -685,6 +689,25 @@ return false;
                 return aetheryte.AetheryteId;
         }
         return null;
+    }
+
+    /// <summary>
+    /// 读取玩家当前职能（ClassJob.Role，实测取值见右）：
+    ///   1=坦克, 2=近战DPS, 3=远程DPS与法系DPS（同为3）, 4=治疗；读不到时返回 0。
+    /// 引擎按「1/2 → 近战停步，其余 → 远程停步」二分取用，0 也归入远程档（保守取远）。
+    /// </summary>
+    private byte GetPlayerRole()
+    {
+        try
+        {
+            var job = _playerState.ClassJob;
+            if (!job.IsValid) return 0;
+            return job.Value.Role;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     /// <summary>读取当前 TerritoryType，按可靠性优先级：原生 GameMain → 反射</summary>

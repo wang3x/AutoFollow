@@ -297,14 +297,19 @@ public sealed class DebugWindow
                 {
                     ImGui.TableSetupColumn("label", ImGuiTableColumnFlags.WidthStretch);
                     ImGui.TableSetupColumn("val", ImGuiTableColumnFlags.WidthFixed, 140);
-                    DrawDragRow("离Boss圈停步 (y)", _config.BossStopRange, 0.5f, 0f, 30f,
-                        v => _config.BossStopRange = v,
-                        "玩家与 Boss 目标圈外沿的距离 ≤ 此值时停步并开始战斗；0 表示贴到圈边");
+                    DrawDragRow("近战停步 (y)", _config.BossStopMelee, 0.5f, 0f, 30f,
+                        v => _config.BossStopMelee = v,
+                        "近战类（坦克 / 近战DPS）与 Boss 目标圈外沿的距离 ≤ 此值时停步；0 表示贴到圈边");
+                    DrawDragRow("远程停步 (y)", _config.BossStopRanged, 0.5f, 0f, 30f,
+                        v => _config.BossStopRanged = v,
+                        "远程类（远程DPS / 法系DPS / 治疗）与 Boss 目标圈外沿的距离 ≤ 此值时停步");
                     DrawDragRow("Boss识别范围 (y)", _config.BossScanRange, 1f, 10f, 120f,
                         v => _config.BossScanRange = v,
                         "只有距玩家在此范围内的 Boss 才参与判定；范围外的 Boss 会被忽略，继续按跟随目标距离判定");
                     ImGui.EndTable();
                 }
+
+                ImGui.TextDisabled("近战停步：坦克 / 近战DPS    远程停步：远程DPS / 法系DPS / 治疗（按当前职业自动取用，可手调）");
                 ImGui.TextDisabled("Boss 判定：以玩家当前实际最大生命值为基准（含等级同步），敌人50级以上 >20倍、50级以下 >10倍");
             }
 
@@ -458,8 +463,9 @@ public sealed class DebugWindow
         _config.ScanInterval = 1f;
         _config.SprintThreshold = 20f;
         _config.MoveThreshold = 5f;
-        _config.BossStopRange = 10f;
         _config.BossScanRange = 40f;
+        _config.BossStopMelee = 2f;
+        _config.BossStopRanged = 10f;
     }
 
     private void DrawHotkeySelector(string label, ref int keyValue, Action<int> onSet)

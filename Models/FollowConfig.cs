@@ -16,9 +16,13 @@ public class FollowConfig
 
     // ── Boss 战专用：按「目标圈外沿」判定停止，小怪不受影响 ──
     public bool BossCircleStop { get; set; } = true;
-    public float BossStopRange { get; set; } = 10f;
     /// <summary>Boss 识别范围：只有距玩家在此距离内的 Boss 才参与判定（默认 40y）</summary>
     public float BossScanRange { get; set; } = 40f;
+
+    // ── Boss 停步距离：按「近战 / 远程」两大类区分，均可手调 ──
+    // 近战类 = 坦克 + 近战DPS；远程类 = 远程DPS + 法系DPS + 治疗
+    public float BossStopMelee  { get; set; } = 2f;   // 近战（坦克/近战DPS）
+    public float BossStopRanged { get; set; } = 10f;  // 远程（远程DPS/法系DPS/治疗）
     public bool SprintEnabled { get; set; } = true;
     public bool SprintAlwaysOn { get; set; } = false;
     public bool SprintOnlyInCombat { get; set; } = false;

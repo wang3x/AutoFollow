@@ -77,15 +77,34 @@ public sealed class FollowEngine : IDisposable
 
     private readonly Func<ushort?> _getTerritory;
 
+    /// <summary>取玩家当前职能（ClassJob.Role：1坦克/2近战/3远程与法系/4治疗，0=未知）。由 Plugin 注入，避免引擎直接依赖 IPlayerState。</summary>
+    private readonly Func<byte> _getPlayerRole;
+
     public FollowEngine(
         IObjectTable objectTable, IFramework framework,
         FollowConfig config, ConditionManager conditionManager, SprintController sprint,
         IPCService ipc, VnavmeshFollow vnavmesh, DebugLog debugLog,
-        Func<ushort?> getTerritory)
+        Func<ushort?> getTerritory, Func<byte> getPlayerRole)
     {
         _objectTable = objectTable; _framework = framework;
         _config = config; _conditionManager = conditionManager; _sprint = sprint;
         _ipc = ipc; _vnavmesh = vnavmesh; _debugLog = debugLog; _getTerritory = getTerritory;
+        _getPlayerRole = getPlayerRole;
+    }
+
+    /// <summary>
+    /// 当前生效的 Boss 停步距离，按职能分两大类（ClassJob.Role 实测取值）：
+    ///   近战类（坦克 Role=1 / 近战DPS Role=2）        → BossStopMelee（默认 2y）
+    ///   远程类（远程与法系DPS Role=3 / 治疗 Role=4）  → BossStopRanged（默认 10y）
+    /// 职能读不到时按远程类处理（保守：站远一点，避免贴进圈里）。
+    /// </summary>
+    private float EffectiveBossStopRange
+    {
+        get
+        {
+            var role = _getPlayerRole();
+            return role is 1 or 2 ? _config.BossStopMelee : _config.BossStopRanged;
+        }
     }
 
     public void Start() { _framework.Update += OnTick; _lastUpdate = DateTime.MinValue; _followStartTime = DateTime.UtcNow; _debugLog.Log("引擎", "启动帧监听"); }
@@ -113,7 +132,7 @@ public sealed class FollowEngine : IDisposable
             {
                 var boss = ResolveBossAnchor();
                 bool reached = boss != null
-                    ? DistanceToBossCircle(p.Position, boss) <= _config.BossStopRange
+                    ? DistanceToBossCircle(p.Position, boss) <= EffectiveBossStopRange
                     : Vector3.Distance(p.Position, t.Position) <= 5f;
 
                 if (reached)
@@ -432,10 +451,20 @@ public sealed class FollowEngine : IDisposable
             : 0f;
 
         // 聊天提示：用户明确要求「明显的提示」，故用 Notice 强制输出（不受聊天开关影响）
-        Log.Notice($"[强效跟随] 进入 Boss 战：{name} Lv{level}，将在圈外 {_config.BossStopRange:F0}y 停下开打");
+        Log.Notice($"[强效跟随] 进入 Boss 战：{name} Lv{level}，将在圈外 {EffectiveBossStopRange:F0}y 停下开打");
 
+        var role = _getPlayerRole();
+        var roleName = role switch
+        {
+            1 => "坦克",
+            2 => "近战",
+            3 => "远程/法系",
+            4 => "治疗",
+            _ => "未知",
+        };
         _debugLog.Log("boss",
-            $"进入Boss战 {name} Lv{level} 圈R{anchor.HitboxRadius:F1} 当前圈外沿{gap:F1}y 停止阈值{_config.BossStopRange:F0}y");
+            $"进入Boss战 {name} Lv{level} 圈R{anchor.HitboxRadius:F1} 当前圈外沿{gap:F1}y " +
+            $"停止阈值{EffectiveBossStopRange:F0}y（职能{roleName}/{role}）");
     }
 
     private IGameObject? ResolveBossAnchorCore()
