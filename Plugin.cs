@@ -31,6 +31,10 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IGameGui _gameGui;
     private readonly IDutyState _dutyState;
     private readonly IPlayerState _playerState;
+    private readonly IPartyList _partyList;
+    private readonly IDtrBar _dtrBar;
+    private PartyFollowController? _partyFollow;
+
 
     private Configuration _config = null!;
     private FollowConfig _followConfig = null!;
@@ -62,7 +66,7 @@ private DateTime _flyMountStart;
         IAetheryteList aetheryteList,
         IGameGui gameGui,
         IDutyState dutyState,
-        IPlayerState playerState)
+        IPlayerState playerState, IPartyList partyList, IDtrBar dtrBar)
     {
         _pi = pi;
         _commandManager = commandManager;
@@ -77,6 +81,7 @@ private DateTime _flyMountStart;
         _gameGui = gameGui;
         _dutyState = dutyState;
         _playerState = playerState;
+        _partyList = partyList; _dtrBar = dtrBar;
 
         _config = Configuration.Load(_pi);
         _followConfig = _config.Follow;
@@ -231,7 +236,9 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             _followConfig, _conditionManager, _sprint,
             _ipc, _vnavmesh, _debugLog,
             getTerritory: () => TryGetTerritory(_clientState),
-            getPlayerRole: GetPlayerRole);
+            getPlayerRole: GetPlayerRole,
+            resolveContentTarget: id => _partyList.FirstOrDefault(m => m.ContentId == id)?.GameObject);
+        _partyFollow = new PartyFollowController(_partyList, _objectTable, _framework, _dtrBar, _followEngine);
 
         _followEngine.OnStateChanged += (oldState, newState) =>
         {
@@ -315,6 +322,7 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
     /// </summary>
     private void OnDutyCompleted(IDutyStateEventArgs args)
     {
+        _partyFollow?.Disable();
         if (!_followConfig.PauseOnDutyComplete) return;
         if (_followEngine == null) return;
         // 只在引擎活跃时（跟随/追赶/战斗）才处理；空闲/已暂停/紧急停止直接忽略，不打扰用户
@@ -849,6 +857,7 @@ return false;
         _framework.Update -= CheckZoneChange;
         _framework.Update -= CheckTeleportInvitation;
         _dutyState.DutyCompleted -= OnDutyCompleted;
+        _partyFollow?.Dispose();
         _followEngine?.Dispose();
         _customCommands?.Dispose();
         _ipc?.Dispose();

@@ -35,6 +35,10 @@ public sealed class FollowEngine : IDisposable
     private FollowState _state = FollowState.Idle;
     private string? _followTargetName;
     private ulong? _followTargetId;
+    public ulong? TargetContentId { get; private set; }
+    private readonly Func<ulong, IGameObject?> _resolveContentTarget;
+    public event Action? ManualTargetSelected;
+
     private Vector3? _lastSentPosition;
     private DateTime _lastUpdate;
     private DateTime _combatEndTime;
@@ -84,12 +88,13 @@ public sealed class FollowEngine : IDisposable
         IObjectTable objectTable, IFramework framework,
         FollowConfig config, ConditionManager conditionManager, SprintController sprint,
         IPCService ipc, VnavmeshFollow vnavmesh, DebugLog debugLog,
-        Func<ushort?> getTerritory, Func<byte> getPlayerRole)
+        Func<ushort?> getTerritory, Func<byte> getPlayerRole, Func<ulong, IGameObject?> resolveContentTarget)
     {
         _objectTable = objectTable; _framework = framework;
         _config = config; _conditionManager = conditionManager; _sprint = sprint;
         _ipc = ipc; _vnavmesh = vnavmesh; _debugLog = debugLog; _getTerritory = getTerritory;
         _getPlayerRole = getPlayerRole;
+        _resolveContentTarget = resolveContentTarget;
     }
 
     /// <summary>
@@ -862,23 +867,34 @@ public sealed class FollowEngine : IDisposable
 
     private IGameObject? ResolveTarget()
     {
+        if (TargetContentId is ulong contentId) return _resolveContentTarget(contentId);
+
         if (_followTargetId != null)
         {
             var obj = _objectTable.SearchById((uint)_followTargetId.Value);
-            if (obj != null) return obj;
+            if (obj != null && obj.EntityId != _objectTable.LocalPlayer?.EntityId) return obj;
         }
         if (!string.IsNullOrEmpty(_followTargetName))
         {
             var found = _objectTable.FirstOrDefault(o =>
                 o.Name.TextValue == _followTargetName &&
                 o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.Pc);
-            if (found != null) { _followTargetId = found.EntityId; return found; }
+            if (found != null && found.EntityId != _objectTable.LocalPlayer?.EntityId) { _followTargetId = found.EntityId; return found; }
         }
         return null;
     }
 
-    public void SetTarget(string? playerName)
+    public void WaitForParty(string reason)
     {
+        ResetToIdle();
+        PauseReason = reason;
+    }
+
+    public void SetTarget(string? playerName, ulong? contentId = null, bool automatic = false)
+    {
+        if (!automatic) ManualTargetSelected?.Invoke();
+        TargetContentId = contentId;
+
         if (string.IsNullOrWhiteSpace(playerName))
         {
             _followTargetName = null; _followTargetId = null; _lastSentPosition = null;
@@ -963,6 +979,7 @@ public sealed class FollowEngine : IDisposable
         _vnavmesh.Stop();               // 停 vnavmesh 寻路
         _sprint.Reset();                // 清疾跑标记
 
+        TargetContentId = null;
         _followTargetName = null;       // 清跟随目标 → 迷你窗目标名/距离归零
         _followTargetId = null;
         _lastSentPosition = null;
