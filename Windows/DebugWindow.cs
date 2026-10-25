@@ -286,6 +286,29 @@ public sealed class DebugWindow
             }
 
             ImGui.Separator();
+            var bossCircle = _config.BossCircleStop;
+            if (ImGui.Checkbox("Boss战按目标圈停步##bossCircle", ref bossCircle))
+                { _config.BossCircleStop = bossCircle; _onSave(); }
+            ImGui.TextDisabled("开启后：跟随目标正在打 Boss 时，改为「离 Boss 目标圈外沿」判定停步，不再贴到坦克身边；小怪仍按原逻辑");
+
+            if (_config.BossCircleStop)
+            {
+                if (ImGui.BeginTable("##bossCircleTbl", 2, ImGuiTableFlags.SizingStretchProp))
+                {
+                    ImGui.TableSetupColumn("label", ImGuiTableColumnFlags.WidthStretch);
+                    ImGui.TableSetupColumn("val", ImGuiTableColumnFlags.WidthFixed, 140);
+                    DrawDragRow("离Boss圈停步 (y)", _config.BossStopRange, 0.5f, 0f, 30f,
+                        v => _config.BossStopRange = v,
+                        "玩家与 Boss 目标圈外沿的距离 ≤ 此值时停步并开始战斗；0 表示贴到圈边");
+                    DrawDragRow("Boss识别范围 (y)", _config.BossScanRange, 1f, 10f, 120f,
+                        v => _config.BossScanRange = v,
+                        "只有距玩家在此范围内的 Boss 才参与判定；范围外的 Boss 会被忽略，继续按跟随目标距离判定");
+                    ImGui.EndTable();
+                }
+                ImGui.TextDisabled("Boss 判定：以玩家当前实际最大生命值为基准（含等级同步），敌人50级以上 >20倍、50级以下 >10倍");
+            }
+
+            ImGui.Separator();
             if (ImGui.Button("恢复默认")) { ResetDistanceDefaults(); _onSave(); }
         }
 
@@ -435,6 +458,8 @@ public sealed class DebugWindow
         _config.ScanInterval = 1f;
         _config.SprintThreshold = 20f;
         _config.MoveThreshold = 5f;
+        _config.BossStopRange = 10f;
+        _config.BossScanRange = 40f;
     }
 
     private void DrawHotkeySelector(string label, ref int keyValue, Action<int> onSet)

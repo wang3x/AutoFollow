@@ -13,6 +13,12 @@ public class FollowConfig
     public Vector4 BtnColorPaused    { get; set; } = new(1.00f, 0.70f, 0.10f, 1f); // 琥珀
     public float CombatEnterRange { get; set; } = 10f;
     public float CombatExitRange { get; set; } = 30f;
+
+    // ── Boss 战专用：按「目标圈外沿」判定停止，小怪不受影响 ──
+    public bool BossCircleStop { get; set; } = true;
+    public float BossStopRange { get; set; } = 10f;
+    /// <summary>Boss 识别范围：只有距玩家在此距离内的 Boss 才参与判定（默认 40y）</summary>
+    public float BossScanRange { get; set; } = 40f;
     public bool SprintEnabled { get; set; } = true;
     public bool SprintAlwaysOn { get; set; } = false;
     public bool SprintOnlyInCombat { get; set; } = false;

@@ -319,10 +319,12 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
 
         Log.Info("副本通关，停止跟随并复位到初始状态");
         // 用 Log.Print：受「启用聊天提示」控制，默认关闭时不再强制刷屏
-        Log.Print("[强效跟随] 副本通关，已停止跟随并清除目标");
-        _debugLog.Log("状态", "副本通关，停止跟随并复位到初始状态");   // 始终记入「指令日志」
+        Log.Print("[强效跟随] 副本通关，已停止跟随并清除目标（循环插件已暂停）");
+        _debugLog.Log("状态", "副本通关，停止跟随并复位到初始状态；已发送循环暂停命令");   // 始终记入「指令日志」
 
-        _followEngine.ResetToIdle();     // 停跟随 + 清目标 + 状态回 Idle + 交还输出权
+        // restoreLoopOutput:false → 复位的同时明确发一次「停止战斗循环」命令，
+        // 避免通关瞬间处于 Combat 态（输出已恢复）导致出本后 RSR 一直 auto
+        _followEngine.ResetToIdle(restoreLoopOutput: false);
         _miniWindow.ResetToInitial();    // 迷你窗复位：按钮「跟随」、状态清空、折叠区收起
     }
 

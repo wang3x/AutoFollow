@@ -103,19 +103,28 @@ public sealed class FollowEngine : IDisposable
         if (_state is FollowState.Idle or FollowState.Paused or FollowState.EmergencyStopped)
             return;
 
-        // 每帧距离检查 — 距离≤5y停止移动（独立于扫描间隔，防贴脸）
+        // 每帧距离检查（独立于扫描间隔，防贴脸）
+        // Boss 战 → 按「离 Boss 目标圈外沿」判定；其余（小怪/无目标）→ 沿用原「离跟随目标 ≤5y」
         if (_state is FollowState.Following or FollowState.CatchingUp)
         {
             var p = _objectTable[0];
             var t = ResolveTarget();
-            if (p != null && t != null && Vector3.Distance(p.Position, t.Position) <= 5f)
+            if (p != null && t != null)
             {
-                if (_vnavmesh.IsMoving) _vnavmesh.Stop();
-                // 进入战斗状态，恢复循环插件攻击（与 CombatEnterRange 检测相同职责）
-                _ipc.ResumeLoop();
-                _loopPausedByMe = false;
-                SetState(FollowState.Combat);
-                return;
+                var boss = ResolveBossAnchor();
+                bool reached = boss != null
+                    ? DistanceToBossCircle(p.Position, boss) <= _config.BossStopRange
+                    : Vector3.Distance(p.Position, t.Position) <= 5f;
+
+                if (reached)
+                {
+                    if (boss != null)
+                        _debugLog.Log("state", $"距Boss圈{boss.HitboxRadius:F1}y外沿{DistanceToBossCircle(p.Position, boss):F1}y，进入战斗");
+                    if (_vnavmesh.IsMoving) _vnavmesh.Stop();
+                    // 进入战斗状态（SetState 内含 ResumeLoop，恢复循环插件攻击）
+                    SetState(FollowState.Combat);
+                    return;
+                }
             }
         }
 
@@ -132,9 +141,20 @@ public sealed class FollowEngine : IDisposable
         }
         if (inCombat) _wasInCombat = true;
 
+        // _combatEndTime 只在「战斗中 → 脱战」那一帧被赋值；仍是 MinValue 说明本次根本没进过战斗，
+        // 不满足「脱战恢复」的前提（否则 Boss 圈停步把状态置 Combat 时会瞬间误触发）
         if (!inCombat && _state == FollowState.Combat &&
+            _combatEndTime != DateTime.MinValue &&
             (DateTime.UtcNow - _combatEndTime).TotalSeconds >= OutOfCombatDelay)
         {
+            // Boss 战进行中（锚点仍在）→ 保持停步，不恢复跟随。
+            // 否则会与「Boss 圈停步」互相拉扯：恢复跟随→下一帧又被圈判定拉回 Combat→再恢复…（每帧刷屏）
+            if (GetBossAnchor() != null)
+            {
+                _debugLog.Log("state", "脱战但Boss战进行中，保持停步");
+                return;
+            }
+
             // 脱战了但距离还很近的话，不恢复跟随（防反复横跳）
             if (_followTargetId != null || !string.IsNullOrEmpty(_followTargetName))
             {
@@ -189,12 +209,15 @@ public sealed class FollowEngine : IDisposable
         _lastUpdate = now;
 
         // 暂停条件：距离≤进入值 + 已过启动保护期
+        // Boss 战跳过此判定（改由每帧的「Boss 圈外沿」判定接管），否则坦克站在圈心时会被 10y 规则提前叫停
         var graceRemaining = StartupGracePeriod - (DateTime.UtcNow - _followStartTime).TotalSeconds;
-        if (DistanceToTarget <= _config.CombatEnterRange && _state != FollowState.Combat && graceRemaining <= 0)
+        var bossAnchor = ResolveBossAnchor();
+        if (bossAnchor == null && DistanceToTarget <= _config.CombatEnterRange
+            && _state != FollowState.Combat && graceRemaining <= 0)
         {
             Log.Print($"[强效跟随] 距离≤{_config.CombatEnterRange}y，暂停跟随");
             _debugLog.Log("state", $"暂停跟随 距离≤{_config.CombatEnterRange}y");
-            _vnavmesh.Stop(); _ipc.ResumeLoop(); _loopPausedByMe = false; SetState(FollowState.Combat); return;
+            _vnavmesh.Stop(); SetState(FollowState.Combat); return;
         }
         // >30y 恢复跟随+暂停循环（Boss战不恢复）
         if (DistanceToTarget > _config.CombatExitRange && _state == FollowState.Combat)
@@ -245,7 +268,8 @@ public sealed class FollowEngine : IDisposable
         }
 
         // 距离≤5y → 停止移动（不贴脸）
-        if (DistanceToTarget <= 5f)
+        // Boss 战跳过：此时停步与否由「离 Boss 圈外沿」决定，否则坦克站圈心时又会贴脸
+        if (bossAnchor == null && DistanceToTarget <= 5f)
         {
             if (_vnavmesh.IsMoving) _vnavmesh.Stop();
             return;
@@ -261,31 +285,206 @@ public sealed class FollowEngine : IDisposable
         SetState(FollowState.Following);
     }
 
-    /// <summary>扫描周围是否有Boss级敌人</summary>
-    private unsafe bool IsBossTarget()
+    /// <summary>玩家到敌人「目标圈外沿」的距离（已扣除 HitboxRadius，可为负=站在圈内）</summary>
+    private static float DistanceToBossCircle(Vector3 playerPos, IGameObject boss)
+        => Vector3.Distance(playerPos, boss.Position) - boss.HitboxRadius;
+
+    /// <summary>Boss 判定倍数：50 级及以上 / 50 级以下</summary>
+    private const uint BossHpMultiplierHigh = 20;
+    private const uint BossHpMultiplierLow = 10;
+
+    /// <summary>玩家最大生命值低于此值视为读取异常（任何等级角色都远高于此），用于防止基准错乱导致全员误判</summary>
+    private const uint MinPlausiblePlayerHp = 100;
+
+    /// <summary>
+    /// 玩家「当前实际」最大生命值 —— Boss 判定的唯一基准。
+    /// 用 Dalamud 托管属性 ICharacter.MaxHp（内部已按正确偏移读取），
+    /// 它反映等级同步后的实时值（进低级副本同步后大幅下降）、装备与属性修正。
+    /// **不得**用等级换算表推算，也不要用原生指针偏移硬读（7.x 结构变动会读错）。
+    /// </summary>
+    private uint GetPlayerMaxHp()
     {
-        var player = _objectTable[0];
+        // LocalPlayer 比 _objectTable[0] 更明确，避免索引 0 在加载瞬间不是玩家
+        var lp = _objectTable.LocalPlayer as ICharacter;
+        return lp?.MaxHp ?? 0u;
+    }
+
+    /// <summary>
+    /// 单个敌人是否为 Boss 级：以玩家「同步后实际最大生命值」为基准，
+    /// 敌人 50 级及以上 &gt; 20 倍、50 级以下 &gt; 10 倍。
+    /// 全部走 Dalamud 托管 API（ICharacter.MaxHp / ICharacter.Level），不碰原生指针。
+    /// </summary>
+    private bool IsBossLike(IGameObject? obj, uint playerMaxHp)
+    {
+        if (obj == null) return false;
+        if (obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc) return false;
+
+        // 基准异常保护：读不到玩家血量或数值离谱时，一律判定非 Boss，宁可退回旧逻辑也不要全员误判
+        if (playerMaxHp < MinPlausiblePlayerHp) return false;
+
+        if (obj is not ICharacter ch) return false;
+
+        var level = ch.Level;
+        var maxHp = ch.MaxHp;
+        if (maxHp == 0) return false;
+
+        var multiplier = level >= 50 ? BossHpMultiplierHigh : BossHpMultiplierLow;
+        var threshold = (ulong)playerMaxHp * multiplier;   // ulong 防溢出
+
+        var isBoss = maxHp > threshold;
+        if (isBoss)
+        {
+            // 留痕便于实机核对：进低级副本时这里的 playerMaxHp 应是同步后的低值
+            _debugLog.Log("boss",
+                $"Boss判定 Lv{level} 敌HP{maxHp} > 玩家HP{playerMaxHp}×{multiplier}={threshold}");
+        }
+        return isBoss;
+    }
+
+    /// <summary>扫描玩家周围（BossScanRange 内）是否有 Boss 级敌人</summary>
+    private bool IsBossTarget()
+    {
+        var playerHp = GetPlayerMaxHp();
+        if (playerHp < MinPlausiblePlayerHp) return false;
+
+        var player = _objectTable.LocalPlayer as IGameObject;
         if (player == null) return false;
-        var pc = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)player.Address;
-        if (pc == null) return false;
-        var playerHp = pc->MaxHealth;
+
+        var playerPos = player.Position;
+        var range = _config.BossScanRange;
 
         foreach (var obj in _objectTable)
         {
-            if (obj == null || obj.ObjectKind != Dalamud.Game.ClientState.Objects.Enums.ObjectKind.BattleNpc)
-                continue;
-
-            var chara = (FFXIVClientStructs.FFXIV.Client.Game.Character.Character*)obj.Address;
-            if (chara == null) continue;
-
-            var level = chara->Level;
-            var hp = chara->MaxHealth;
-
-            if (level >= 80 && hp > playerHp * 20) return true;
-            if (level >= 50 && level < 80 && hp > playerHp * 15) return true;
-            if (level >= 1 && level < 50 && hp > playerHp * 10) return true;
+            if (obj == null) continue;
+            if (Vector3.Distance(playerPos, obj.Position) > range) continue;   // 范围外忽略
+            if (IsBossLike(obj, playerHp)) return true;
         }
         return false;
+    }
+
+    // Boss 锚点缓存：避免每帧遍历 ObjectTable（250ms 足够，Boss 不会瞬移）
+    private IGameObject? _bossAnchorCache;
+    private DateTime _bossAnchorCacheTime = DateTime.MinValue;
+    private const double BossAnchorCacheSeconds = 0.25;
+
+    // 「进入 Boss 战」提示的防抖状态
+    private bool _bossEngageNotified;
+    private DateTime _lastBossNoticeTime = DateTime.MinValue;
+    private const double BossNoticeCooldownSeconds = 10;
+
+    /// <summary>
+    /// 解析「Boss 战斗锚点」：仅当跟随目标（坦克）正在与一只 Boss 交战时返回该 Boss。
+    /// 小怪、杂兵、目标已死 → 返回 null，调用方回落到原有按跟随目标距离判定的逻辑。
+    ///
+    /// 两条取法（按可靠性排序）：
+    ///   1. 坦克当前选中的目标就是 Boss（最常见）；
+    ///   2. 坦克没选目标时，取「正在攻击坦克」的那只 Boss（Boss 开怪后会自动锁定坦克）。
+    /// </summary>
+    private IGameObject? ResolveBossAnchor()
+    {
+        var anchor = GetBossAnchor();
+        HandleBossEngageNotice(anchor);
+        return anchor;
+    }
+
+    private IGameObject? GetBossAnchor()
+    {
+        if (!_config.BossCircleStop) return null;
+
+        var now = DateTime.UtcNow;
+        if ((now - _bossAnchorCacheTime).TotalSeconds < BossAnchorCacheSeconds)
+        {
+            // 缓存命中：仍需确认对象还活着（死亡/消失要立刻失效）
+            var cached = _bossAnchorCache;
+            if (cached == null) return null;
+            if (cached.IsDead || !cached.IsTargetable) { _bossAnchorCache = null; return null; }
+            return cached;
+        }
+
+        _bossAnchorCacheTime = now;
+        _bossAnchorCache = ResolveBossAnchorCore();
+        return _bossAnchorCache;
+    }
+
+    /// <summary>
+    /// 「进入 Boss 战」提示：锚点由无 → 有时发一次（带 Boss 名与等级），
+    /// 锚点消失（Boss 死亡/脱战）后复位，下次再进再提示。
+    /// 10 秒冷却用于吸收「坦克短暂丢失目标」造成的一帧抖动，避免刷屏。
+    /// </summary>
+    private void HandleBossEngageNotice(IGameObject? anchor)
+    {
+        if (anchor == null)
+        {
+            _bossEngageNotified = false;   // 战斗结束/切回小怪 → 允许下次再提示
+            return;
+        }
+
+        if (_bossEngageNotified) return;
+        if ((DateTime.UtcNow - _lastBossNoticeTime).TotalSeconds < BossNoticeCooldownSeconds) return;
+
+        _bossEngageNotified = true;
+        _lastBossNoticeTime = DateTime.UtcNow;
+
+        var name = anchor.Name.TextValue;
+        var level = (anchor as ICharacter)?.Level ?? 0;
+        var gap = _objectTable.LocalPlayer is IGameObject lp
+            ? DistanceToBossCircle(lp.Position, anchor)
+            : 0f;
+
+        // 聊天提示：用户明确要求「明显的提示」，故用 Notice 强制输出（不受聊天开关影响）
+        Log.Notice($"[强效跟随] 进入 Boss 战：{name} Lv{level}，将在圈外 {_config.BossStopRange:F0}y 停下开打");
+
+        _debugLog.Log("boss",
+            $"进入Boss战 {name} Lv{level} 圈R{anchor.HitboxRadius:F1} 当前圈外沿{gap:F1}y 停止阈值{_config.BossStopRange:F0}y");
+    }
+
+    private IGameObject? ResolveBossAnchorCore()
+    {
+        try
+        {
+            var tank = ResolveTarget();
+            if (tank == null) return null;
+
+            // 基准每帧重新读取：等级同步 / 换装 / 副本内属性变化都会实时反映
+            var playerHp = GetPlayerMaxHp();
+            if (playerHp < MinPlausiblePlayerHp) return null;
+
+            var player = _objectTable.LocalPlayer as IGameObject;
+            if (player == null) return null;
+
+            var playerPos = player.Position;
+            var range = _config.BossScanRange;
+
+            // ① 坦克选中的目标（须在识别范围内 —— 坦克预选远处Boss时不应把玩家拉过去）
+            var selected = tank.TargetObject;
+            if (selected != null && !selected.IsDead && selected.IsTargetable
+                && Vector3.Distance(playerPos, selected.Position) <= range
+                && IsBossLike(selected, playerHp))
+                return selected;
+
+            // ② 兜底：正在攻击坦克的 Boss（仅在战斗中扫描，避免平时浪费）
+            if (!_conditionManager.InCombat) return null;
+
+            IGameObject? best = null;
+            var bestDist = float.MaxValue;
+
+            foreach (var obj in _objectTable)
+            {
+                if (obj == null || obj.IsDead || !obj.IsTargetable) continue;
+                if (obj.TargetObjectId != tank.EntityId) continue;
+
+                var d = Vector3.Distance(playerPos, obj.Position);
+                if (d > range) continue;                       // 范围外忽略
+                if (!IsBossLike(obj, playerHp)) continue;
+
+                if (d < bestDist) { bestDist = d; best = obj; }
+            }
+            return best;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>恢复跟随：开疾跑、立即扫描坐标、发送移动</summary>
@@ -304,9 +503,7 @@ public sealed class FollowEngine : IDisposable
         // 清除上次发送的坐标缓存，强制重新发送
         _lastSentPosition = null;
 
-        _ipc.PauseLoop();
-        _loopPausedByMe = true;
-        SetState(FollowState.Following);
+        SetState(FollowState.Following);   // 内含 PauseLoop
     }
 
     /// <summary>
@@ -681,13 +878,55 @@ public sealed class FollowEngine : IDisposable
     }
 
     /// <summary>
-    /// 完全停止并复位到插件刚加载时的状态：
-    /// 停寻路、清惯移/穿线、清目标、状态回 Idle、把输出权交还给循环插件。
-    /// 与 Pause() 的区别：不发暂停循环命令，反而发恢复命令，让第三方输出插件回到插件未接管时的正常状态。
+    /// 按引擎状态同步第三方循环插件的输出权 —— 状态即真相，所有入口共用这一处，
+    /// 避免「SetTarget 进了 Following 却没暂停 RSR」这类不一致。
+    ///
+    ///   Following / CatchingUp   → 暂停输出（专心跟随）
+    ///   Combat                   → 恢复输出（到位开打）
+    ///   Paused / EmergencyStopped → 暂停输出
+    ///   Idle（清目标/复位）       → 若本插件暂停过则还回去
     /// </summary>
-    public void ResetToIdle()
+    private void SyncLoopOutput(FollowState newState)
     {
-        _debugLog.Log("cmd", "reset to idle");
+        if (_ipc == null) return;
+
+        switch (newState)
+        {
+            case FollowState.Combat:
+                _ipc.ResumeLoop();
+                _loopPausedByMe = false;
+                break;
+
+            case FollowState.Following:
+            case FollowState.CatchingUp:
+            case FollowState.Paused:
+            case FollowState.EmergencyStopped:
+                _ipc.PauseLoop();
+                _loopPausedByMe = true;
+                break;
+
+            case FollowState.Idle:
+                // 清目标/复位：只还原本插件真正暂停过的，别硬开用户原本关着的输出
+                if (_loopPausedByMe)
+                {
+                    _ipc.ResumeLoop();
+                    _loopPausedByMe = false;
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 完全停止并复位到插件刚加载时的状态：
+    /// 停寻路、清惯移/穿线、清目标、状态回 Idle。
+    /// </summary>
+    /// <param name="restoreLoopOutput">
+    /// <c>true</c>  —— 把输出权交还给循环插件（清目标等常规场景，恢复插件接管前的状态）；
+    /// <c>false</c> —— 反过来**暂停一次**循环输出（副本通关场景：出本后不希望 RSR 继续 auto）。
+    /// </param>
+    public void ResetToIdle(bool restoreLoopOutput = true)
+    {
+        _debugLog.Log("cmd", $"reset to idle (restoreLoopOutput={restoreLoopOutput})");
 
         ClearInertiaState();            // 清惯移/穿线阶段，松开穿线键
         _vnavmesh.Stop();               // 停 vnavmesh 寻路
@@ -702,15 +941,27 @@ public sealed class FollowEngine : IDisposable
 
         _conditionManager.ManualResume();
         IsEmergencyStopped = false;
+        _bossEngageNotified = false;    // 顺手复位「进入Boss战」提示标记
 
-        // 只还原本插件动过的状态：没接管过就不要发恢复命令，否则会把用户原本关着的输出强行打开
-        if (_loopPausedByMe)
+        if (restoreLoopOutput)
         {
-            _ipc.ResumeLoop();
-            _loopPausedByMe = false;
+            // 只还原本插件动过的状态：没接管过就不要发恢复命令，否则会把用户原本关着的输出强行打开
+            if (_loopPausedByMe)
+            {
+                _ipc.ResumeLoop();
+                _loopPausedByMe = false;
+            }
+
+            SetState(FollowState.Idle); // PauseReason 清空 + StopUpdate() 取消帧订阅
+            return;
         }
 
-        SetState(FollowState.Idle);     // PauseReason 清空 + StopUpdate() 取消帧订阅
+        // ── 副本通关：出本后不要让循环插件继续 auto ──
+        // 先把归属标记摘掉，避免 SetState(Idle) 里的 SyncLoopOutput 又发一次恢复命令（否则会出现"恢复→再暂停"的闪烁）
+        _loopPausedByMe = false;
+        SetState(FollowState.Idle);
+        _ipc.PauseLoop();               // 明确发一次「停止战斗循环」命令
+        _loopPausedByMe = true;         // 记录：当前输出是由本插件关闭的
     }
 
     public void EmergencyStop()
@@ -718,9 +969,8 @@ public sealed class FollowEngine : IDisposable
         Log.Print("[强效跟随] 紧急停止");
         _debugLog.Log("cmd", "emergency stop");
         ClearInertiaState();
-        SetState(FollowState.EmergencyStopped);
-        _vnavmesh.Stop(); _sprint.Reset(); _ipc.PauseLoop();
-        _loopPausedByMe = true;
+        SetState(FollowState.EmergencyStopped);   // 内含 PauseLoop
+        _vnavmesh.Stop(); _sprint.Reset();
         IsEmergencyStopped = true;
     }
 
@@ -748,9 +998,8 @@ public sealed class FollowEngine : IDisposable
         _debugLog.Log("cmd", $"pause: {reason ?? ""}");
         PauseReason = reason ?? "手动暂停";
         ClearInertiaState();
-        SetState(FollowState.Paused); _vnavmesh.Stop(); _sprint.Reset();
-        _conditionManager.ManualPause(reason); _ipc.PauseLoop();
-        _loopPausedByMe = true;
+        SetState(FollowState.Paused); _vnavmesh.Stop(); _sprint.Reset();   // 内含 PauseLoop
+        _conditionManager.ManualPause(reason);
     }
 
     public void Resume()
@@ -759,15 +1008,15 @@ public sealed class FollowEngine : IDisposable
         if (string.IsNullOrEmpty(_followTargetName)) return;
         _lastSentPosition = null;
         ClearInertiaState();
+        // 恢复的是「跟随」而不是「开打」：进入 Following 时输出应保持暂停，等靠近目标进 Combat 才恢复
         Start(); SetState(FollowState.Following);
-        _ipc.ResumeLoop();
-        _loopPausedByMe = false;
     }
 
     private void SetState(FollowState newState)
     {
         if (_state == newState) return;
         var old = _state; _state = newState;
+        SyncLoopOutput(newState);   // 状态即真相：输出权随状态一起切换
         PauseReason = _state switch
         {
             FollowState.Combat => "战斗姿态",
