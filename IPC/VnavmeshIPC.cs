@@ -1,144 +1,135 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Ipc;
 using Dalamud.Plugin.Services;
+using AutoFollow.Movement;
 using AutoFollow.Windows;
 
 namespace AutoFollow.IPC;
 
-/// <summary>
-/// vnavmesh IPC — 使用 Nav.Pathfind + Path.MoveTo 标准接口。
-/// 国服/国际服通用，寻路在后台线程执行不阻塞主线程。
-/// </summary>
+/// <summary>All game/IPC reads and path publication happen on the framework thread.</summary>
 public sealed class VnavmeshIPC : IDisposable
 {
-    private readonly IDalamudPluginInterface _pi;
-    private readonly DebugLog _debugLog;
-    private readonly Func<Vector3?> _getPlayerPos;
+    private readonly IFramework _framework;
+    private readonly DebugLog _log;
+    private readonly Func<Vector3?> _player;
+    private readonly Func<ushort?> _territory;
+    private readonly ICallGateSubscriber<bool> _ready;
+    private readonly ICallGateSubscriber<Vector3, Vector3, bool, Task<List<Vector3>>> _find;
+    private readonly ICallGateSubscriber<List<Vector3>, bool, object> _move;
+    private readonly ICallGateSubscriber<object> _stop;
+    private readonly ICallGateSubscriber<bool> _running;
+    private readonly PathRequestGuard _requests = new();
+    private bool _disposed;
+    private PathStatus _status;
+    private Vector3 _destination;
+    private DateTime _requestStarted;
 
-    private ICallGateSubscriber<bool>? _navIsReady;
-    private ICallGateSubscriber<Vector3, Vector3, bool, Task<List<Vector3>>>? _navPathfind;
-    private ICallGateSubscriber<List<Vector3>, bool, object>? _pathMoveTo;
-    private ICallGateSubscriber<object>? _pathStop;
-    private ICallGateSubscriber<bool>? _pathIsRunning;
-
-    private bool _connectionAttempted;
-    private bool _isAvailable;
-    private int _pathfindVersion;
+    public VnavmeshIPC(IDalamudPluginInterface pi, DebugLog log, Func<Vector3?> player,
+        IFramework framework, Func<ushort?> territory)
+    {
+        _framework = framework; _log = log; _player = player; _territory = territory;
+        _ready = pi.GetIpcSubscriber<bool>("vnavmesh.Nav.IsReady");
+        _find = pi.GetIpcSubscriber<Vector3, Vector3, bool, Task<List<Vector3>>>("vnavmesh.Nav.Pathfind");
+        _move = pi.GetIpcSubscriber<List<Vector3>, bool, object>("vnavmesh.Path.MoveTo");
+        _stop = pi.GetIpcSubscriber<object>("vnavmesh.Path.Stop");
+        _running = pi.GetIpcSubscriber<bool>("vnavmesh.Path.IsRunning");
+    }
 
     public bool IsAvailable
     {
-        get { if (!_connectionAttempted) TryConnect(); return _isAvailable; }
+        get { try { return !_disposed && _ready.InvokeFunc(); } catch { return false; } }
     }
 
-    public VnavmeshIPC(IDalamudPluginInterface pi, DebugLog debugLog, Func<Vector3?> getPlayerPos)
+    public PathStatus Status
     {
-        _pi = pi;
-        _debugLog = debugLog;
-        _getPlayerPos = getPlayerPos;
-    }
-
-    private void TryConnect()
-    {
-        if (_connectionAttempted) return;
-        _connectionAttempted = true;
-        try
+        get
         {
-            _navIsReady = _pi.GetIpcSubscriber<bool>("vnavmesh.Nav.IsReady");
-            _navPathfind = _pi.GetIpcSubscriber<Vector3, Vector3, bool, Task<List<Vector3>>>("vnavmesh.Nav.Pathfind");
-            _pathMoveTo = _pi.GetIpcSubscriber<List<Vector3>, bool, object>("vnavmesh.Path.MoveTo");
-            _pathStop = _pi.GetIpcSubscriber<object>("vnavmesh.Path.Stop");
-            _pathIsRunning = _pi.GetIpcSubscriber<bool>("vnavmesh.Path.IsRunning");
-            _isAvailable = _navIsReady.InvokeFunc();
-            if (_isAvailable)
+            if (_status == PathStatus.Pending && (DateTime.UtcNow - _requestStarted).TotalSeconds > 10)
             {
-                Log.Info("vnavmesh IPC ready");
-                _debugLog.Log("IPC", "vnavmesh connected");
+                InvalidatePaths(); _status = PathStatus.Failed;
             }
+            if (_status == PathStatus.Moving && !IsMoving())
+                _status = _player() is Vector3 p && Vector3.Distance(p, _destination) <= 1.5f
+                    ? PathStatus.Arrived : PathStatus.Failed;
+            return _status;
         }
-        catch (Exception ex)
-        {
-            _isAvailable = false;
-            Log.Info($"vnavmesh not available: {ex.Message}");
-        }
-    }
-
-    /// <summary>后台寻路+移动（带版本号防重叠，只应用最新结果）。主目标寻路失败时自动改用 fallbackDestination（如穿线延伸点不可达时退回原最后坐标）。</summary>
-    public void MoveToPositionAsync(Vector3 from, Vector3 destination, Vector3? fallbackDestination = null)
-    {
-        if (!IsAvailable) { _debugLog.Log("IPC", "vnavmesh unavailable"); return; }
-
-        var version = Interlocked.Increment(ref _pathfindVersion);
-        _debugLog.Log("IPC", $"pathfind v{version} ({from.X:F1},{from.Y:F1},{from.Z:F1}) -> ({destination.X:F1},{destination.Y:F1},{destination.Z:F1})");
-
-        Task.Run(async () =>
-        {
-            try
-            {
-                var pathTask = _navPathfind!.InvokeFunc(from, destination, false);
-                var path = await pathTask;
-                // 主目标寻路失败 → fallback 备用目标（如延伸点越界时退回原最后坐标）
-                if (path == null || path.Count == 0)
-                {
-                    if (fallbackDestination != null)
-                    {
-                        _debugLog.Log("move", $"primary path not found, fallback to ({fallbackDestination.Value.X:F1},{fallbackDestination.Value.Y:F1},{fallbackDestination.Value.Z:F1})");
-                        pathTask = _navPathfind!.InvokeFunc(from, fallbackDestination.Value, false);
-                        path = await pathTask;
-                    }
-                    if (path == null || path.Count == 0)
-                    {
-                        _debugLog.Log("move", "no path found");
-                        return;
-                    }
-                }
-                // 如果在此期间有更新的版本，丢弃当前结果防重叠
-                if (version != _pathfindVersion)
-                {
-                    _debugLog.Log("move", $"skip stale path (v{version} != v{_pathfindVersion})");
-                    return;
-                }
-
-                // ── A方案：寻路完成后用玩家实时位置替换路径起点 ──
-                // 寻路计算慢，Pathfind 传入的 from 是发起时刻的位置，已与实际坐标有误差。
-                // 实时读取当前坐标覆盖 path[0]，并清掉过近的冗余节点，避免角色转头回退。
-                var playerPos = _getPlayerPos?.Invoke();
-                if (playerPos != null)
-                {
-                    path[0] = playerPos.Value;
-                    while (path.Count > 1 && Vector3.Distance(path[1], playerPos.Value) < 2f)
-                        path.RemoveAt(1);
-                    _debugLog.Log("move", $"A方案: 起点替换为实时坐标, 路径剩余 {path.Count} 节点");
-                }
-
-                _debugLog.Log("move", $"path found ({path.Count} nodes)");
-                _pathMoveTo!.InvokeAction(path, false);
-            }
-            catch (Exception ex)
-            {
-                _debugLog.Log("IPC", $"move error: {ex.Message}");
-            }
-        });
-    }
-
-    public void Stop()
-    {
-        try { _pathStop?.InvokeAction(); _debugLog.Log("move", "stop"); } catch { }
     }
 
     public bool IsMoving()
     {
-        try { return _pathIsRunning?.InvokeFunc() ?? false; } catch { return false; }
+        try { return !_disposed && _running.InvokeFunc(); } catch { return false; }
     }
 
-    // ── 其他 ──
+    public void MoveToPositionAsync(Vector3 from, Vector3 destination, Vector3? fallbackDestination = null)
+        => Request(from, destination, false);
 
-    /// <summary>使所有挂起的寻路结果失效（防止旧 MoveTo 结果晚到覆盖后续移动）</summary>
-    public void InvalidatePaths()
+    // A successful probe does not start movement; the engine explicitly resumes afterwards.
+    public void Probe(Vector3 from, Vector3 destination) => Request(from, destination, true);
+
+    private async void Request(Vector3 from, Vector3 destination, bool probe)
     {
-        Interlocked.Increment(ref _pathfindVersion);
-        _debugLog.Log("move", "invalidate pending paths");
+        var version = _requests.Next();
+        var territory = _territory();
+        _requestStarted = DateTime.UtcNow;
+        _status = PathStatus.Pending;
+        if (!IsAvailable || territory == null) { _status = PathStatus.Failed; return; }
+        try
+        {
+            var path = await _find.InvokeFunc(from, destination, false).ConfigureAwait(false);
+            await _framework.RunOnFrameworkThread(() =>
+            {
+                if (_disposed || !_requests.IsCurrent(version) || territory != _territory()) return;
+                if (!PathRequestGuard.CompletePath(path, destination))
+                {
+                    Stop(); _status = PathStatus.Failed;
+                    _log.Log("move", "No complete path to destination");
+                    return;
+                }
+                var player = _player();
+                // A stale start could cut a corner. Retry from the new location instead.
+                if (player == null || Vector3.Distance(player.Value, from) > 3f)
+                {
+                    Stop(); _status = PathStatus.Failed; return;
+                }
+                if (probe) { _status = PathStatus.Reachable; return; }
+                _destination = destination;
+                _move.InvokeAction(path, false);
+                _status = PathStatus.Moving;
+            });
+        }
+        catch (Exception ex)
+        {
+            if (_disposed) return;
+            await _framework.RunOnFrameworkThread(() =>
+            {
+                if (_disposed || !_requests.IsCurrent(version)) return;
+                Stop(); _status = PathStatus.Failed; _log.Log("IPC", ex.Message);
+            });
+        }
     }
 
-    public void Dispose() { Stop(); }
+    public void MoveDirect(Vector3 destination)
+    {
+        Stop();
+        try
+        {
+            if (!IsAvailable) { _status = PathStatus.Failed; return; }
+            _destination = destination;
+            _move.InvokeAction(new List<Vector3> { destination }, false);
+            _status = PathStatus.Moving;
+        }
+        catch { _status = PathStatus.Failed; }
+    }
+
+    public void InvalidatePaths() => _requests.Next();
+
+    public void Stop()
+    {
+        InvalidatePaths();
+        _status = PathStatus.Stopped;
+        try { _stop.InvokeAction(); } catch { }
+    }
+
+    public void Dispose() { Stop(); _disposed = true; }
 }

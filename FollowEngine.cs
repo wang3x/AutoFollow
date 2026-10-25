@@ -107,8 +107,9 @@ public sealed class FollowEngine : IDisposable
         }
     }
 
-    public void Start() { _framework.Update += OnTick; _lastUpdate = DateTime.MinValue; _followStartTime = DateTime.UtcNow; _debugLog.Log("引擎", "启动帧监听"); }
-    private void StopUpdate() { _framework.Update -= OnTick; _debugLog.Log("引擎", "停止帧监听"); }
+    private bool _started;
+    public void Start() { if (_started) return; _started = true; _framework.Update += OnTick; _lastUpdate = DateTime.MinValue; _followStartTime = DateTime.UtcNow; _debugLog.Log("引擎", "启动帧监听"); }
+    private void StopUpdate() { _started = false; _framework.Update -= OnTick; _debugLog.Log("引擎", "停止帧监听"); }
 
     private void OnTick(IFramework _)
     {
@@ -139,7 +140,7 @@ public sealed class FollowEngine : IDisposable
                 {
                     if (boss != null)
                         _debugLog.Log("state", $"距Boss圈{boss.HitboxRadius:F1}y外沿{DistanceToBossCircle(p.Position, boss):F1}y，进入战斗");
-                    if (_vnavmesh.IsMoving) _vnavmesh.Stop();
+                    _vnavmesh.Stop();
                     // 进入战斗状态（SetState 内含 ResumeLoop，恢复循环插件攻击）
                     SetState(FollowState.Combat);
                     return;
@@ -290,7 +291,7 @@ public sealed class FollowEngine : IDisposable
         // Boss 战跳过：此时停步与否由「离 Boss 圈外沿」决定，否则坦克站圈心时又会贴脸
         if (bossAnchor == null && DistanceToTarget <= 5f)
         {
-            if (_vnavmesh.IsMoving) _vnavmesh.Stop();
+            _vnavmesh.Stop();
             return;
         }
 
@@ -830,7 +831,7 @@ public sealed class FollowEngine : IDisposable
         _inertiaLastKnownDest = null;
         _inertiaMoveDest = null;
         _debugLog.Log("状态", reason);
-        if (_vnavmesh.IsMoving) _vnavmesh.Stop();
+        _vnavmesh.Stop();
     }
 
     private void ClearInertiaState()
@@ -888,6 +889,7 @@ public sealed class FollowEngine : IDisposable
             return;
         }
 
+        _vnavmesh.Stop();
         _followTargetName = playerName; _followTargetId = null; _lastSentPosition = null;
         ClearInertiaState();
         var target = ResolveTarget();

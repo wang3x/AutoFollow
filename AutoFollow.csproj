@@ -2,6 +2,7 @@
 
   <PropertyGroup>
     <!-- 国服卫月 API 15, net10.0-windows -->
+    <DalamudLibPath Condition="'$(DalamudLibPath)' == ''">$(AppData)\XIVLauncher\addon\Hooks\dev</DalamudLibPath>
     <TargetFramework>net10.0-windows</TargetFramework>
     <Platforms>x64</Platforms>
     <LangVersion>12</LangVersion>
@@ -14,29 +15,30 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="tests/**/*.cs" />
     <Reference Include="Dalamud" SpecificVersion="False">
-      <HintPath>$(AppData)\XIVLauncher\addon\Hooks\dev\Dalamud.dll</HintPath>
+      <HintPath>$(DalamudLibPath)\Dalamud.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="FFXIVClientStructs" SpecificVersion="False">
-      <HintPath>$(AppData)\XIVLauncher\addon\Hooks\dev\FFXIVClientStructs.dll</HintPath>
+      <HintPath>$(DalamudLibPath)\FFXIVClientStructs.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="ImGui.NET">
-      <HintPath>$(AppData)\XIVLauncher\addon\Hooks\dev\ImGui.NET.dll</HintPath>
+      <HintPath>$(DalamudLibPath)\ImGui.NET.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <Reference Include="InteropGenerator.Runtime" SpecificVersion="False">
-      <HintPath>$(AppData)\XIVLauncher\addon\Hooks\dev\InteropGenerator.Runtime.dll</HintPath>
+      <HintPath>$(DalamudLibPath)\InteropGenerator.Runtime.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <!-- 读取 ClassJob.Role（职能）需要 Lumina 的 RowRef/Excel sheet，运行时由卫月提供 -->
     <Reference Include="Lumina" SpecificVersion="False">
-      <HintPath>$(AppData)\XIVLauncher\addon\Hooks\dev\Lumina.dll</HintPath>
+      <HintPath>$(DalamudLibPath)\Lumina.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Lumina.Excel" SpecificVersion="False">
-      <HintPath>$(AppData)\XIVLauncher\addon\Hooks\dev\Lumina.Excel.dll</HintPath>
+      <HintPath>$(DalamudLibPath)\Lumina.Excel.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

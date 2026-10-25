@@ -220,7 +220,8 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         Log.Debug("首帧初始化");
 
         _ipc = new IPCService(_pi, _commandManager, _debugLog,
-            getPlayerPos: () => _objectTable[0]?.Position);
+            getPlayerPos: () => _objectTable.LocalPlayer?.Position,
+            framework: _framework, getTerritory: () => TryGetTerritory(_clientState));
         _ipc.LoopController.SetCommands(_followConfig.PauseCommand, _followConfig.ResumeCommand);
 
         _vnavmesh = new VnavmeshFollow(_ipc.Vnavmesh);
