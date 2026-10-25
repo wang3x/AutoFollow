@@ -321,26 +321,10 @@ public sealed class DebugWindow
         if (ImGui.CollapsingHeader("其他控制", ImGuiTreeNodeFlags.DefaultOpen))
         {
             var cont = _config.ContinueOnTargetLost;
-            if (ImGui.Checkbox("目标丢失后继续前往最后位置##continueOnLost", ref cont))
+            if (ImGui.Checkbox("目标丢失后有限尝试传送##continueOnLost", ref cont))
                 { _config.ContinueOnTargetLost = cont; _onSave(); }
-            ImGui.TextDisabled("跟随目标消失时，自动前往其最后所在位置，到达后停下待命；目标重现(≤100y)自动接回跟随");
-            if (_config.ContinueOnTargetLost)
-            {
-                var crossKey = (int)_config.CrossLineKey;
-                ImGui.Text("穿线自动移动键:");
-                ImGui.SameLine();
-                DrawHotkeySelector("穿线键##crossLineKey", ref crossKey,
-                    vk => { _config.CrossLineKey = (Dalamud.Game.ClientState.Keys.VirtualKey)vk; _onSave(); });
-                ImGui.SameLine();
-                var hold = _config.CrossLineKeyIsHold;
-                if (ImGui.Checkbox("按住型##crossLineHold", ref hold))
-                    { _config.CrossLineKeyIsHold = hold; _onSave(); }
-                ImGui.TextDisabled(_config.CrossLineKeyIsHold
-                    ? "该键需持续按住才能移动（如 W），穿线期间一直按着，结束后松开"
-                    : "该键按一下即持续移动（如 R=自动奔跑），穿线期间按一次，结束后再按一次取消");
-                ImGui.TextColored(new Vector4(1f, 0.8f, 0.2f, 1f),
-                    "注意：穿线自动移动通过系统按键模拟实现，仅当游戏窗口保持在前台时才能生效。");
-            }
+            ImGui.TextDisabled("目标丢失后最多尝试一次：30y 内接近入口，直走最多 2 秒或 5y，等待最多 10 秒。");
+            ImGui.TextDisabled("无法到达或尝试失败立即停止；目标可见且完整路径恢复后自动继续。旧穿线按键配置不再使用。");
 
             var autoZone = _config.AutoFollowAfterZoneChange;
             if (ImGui.Checkbox("换图后自动恢复跟随##autoFollowZone", ref autoZone))

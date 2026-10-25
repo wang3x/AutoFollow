@@ -14,6 +14,7 @@ public sealed class VnavmeshIPC : IDisposable
     private readonly DebugLog _log;
     private readonly Func<Vector3?> _player;
     private readonly Func<ushort?> _territory;
+    private readonly Func<bool> _canMove;
     private readonly ICallGateSubscriber<bool> _ready;
     private readonly ICallGateSubscriber<Vector3, Vector3, bool, Task<List<Vector3>>> _find;
     private readonly ICallGateSubscriber<List<Vector3>, bool, object> _move;
@@ -26,9 +27,9 @@ public sealed class VnavmeshIPC : IDisposable
     private DateTime _requestStarted;
 
     public VnavmeshIPC(IDalamudPluginInterface pi, DebugLog log, Func<Vector3?> player,
-        IFramework framework, Func<ushort?> territory)
+        IFramework framework, Func<ushort?> territory, Func<bool> canMove)
     {
-        _framework = framework; _log = log; _player = player; _territory = territory;
+        _framework = framework; _log = log; _player = player; _territory = territory; _canMove = canMove;
         _ready = pi.GetIpcSubscriber<bool>("vnavmesh.Nav.IsReady");
         _find = pi.GetIpcSubscriber<Vector3, Vector3, bool, Task<List<Vector3>>>("vnavmesh.Nav.Pathfind");
         _move = pi.GetIpcSubscriber<List<Vector3>, bool, object>("vnavmesh.Path.MoveTo");
@@ -73,13 +74,14 @@ public sealed class VnavmeshIPC : IDisposable
         var territory = _territory();
         _requestStarted = DateTime.UtcNow;
         _status = PathStatus.Pending;
-        if (!IsAvailable || territory == null) { _status = PathStatus.Failed; return; }
+        if (!IsAvailable || territory == null || !_canMove()) { _status = PathStatus.Failed; return; }
         try
         {
             var path = await _find.InvokeFunc(from, destination, false).ConfigureAwait(false);
             await _framework.RunOnFrameworkThread(() =>
             {
-                if (_disposed || !_requests.IsCurrent(version) || territory != _territory()) return;
+                if (_disposed || !_requests.IsCurrent(version) || territory != _territory() || !_canMove())
+                { if (_requests.IsCurrent(version)) Stop(); return; }
                 if (!PathRequestGuard.CompletePath(path, destination))
                 {
                     Stop(); _status = PathStatus.Failed;
@@ -101,11 +103,15 @@ public sealed class VnavmeshIPC : IDisposable
         catch (Exception ex)
         {
             if (_disposed) return;
-            await _framework.RunOnFrameworkThread(() =>
+            try
             {
-                if (_disposed || !_requests.IsCurrent(version)) return;
-                Stop(); _status = PathStatus.Failed; _log.Log("IPC", ex.Message);
-            });
+                await _framework.RunOnFrameworkThread(() =>
+                {
+                    if (_disposed || !_requests.IsCurrent(version)) return;
+                    Stop(); _status = PathStatus.Failed; _log.Log("IPC", ex.Message);
+                });
+            }
+            catch { /* Framework shutdown must not escape an asynchronous completion. */ }
         }
     }
 
@@ -114,7 +120,7 @@ public sealed class VnavmeshIPC : IDisposable
         Stop();
         try
         {
-            if (!IsAvailable) { _status = PathStatus.Failed; return; }
+            if (!IsAvailable || !_canMove() || !PathRequestGuard.Finite(destination)) { _status = PathStatus.Failed; return; }
             _destination = destination;
             _move.InvokeAction(new List<Vector3> { destination }, false);
             _status = PathStatus.Moving;

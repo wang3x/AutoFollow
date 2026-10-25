@@ -49,7 +49,8 @@ public sealed class Plugin : IDalamudPlugin
     private MiniWindow _miniWindow = null!;
 private DateTime _flyMountStart;
     private int _flyVersion;
-    private ushort? _lastTerritory;
+    private TransitionProfile? _pendingTransition;
+    private DateTime _transitionInteractionTime;
     private DateTime _lastTeleportClick = DateTime.MinValue;
     private PluginStatusChecker _statusChecker = null!;
 
@@ -226,7 +227,13 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
 
         _ipc = new IPCService(_pi, _commandManager, _debugLog,
             getPlayerPos: () => _objectTable.LocalPlayer?.Position,
-            framework: _framework, getTerritory: () => TryGetTerritory(_clientState));
+            framework: _framework, getTerritory: () => TryGetTerritory(_clientState),
+            canMove: () => _objectTable.LocalPlayer is { IsDead: false }
+                && !_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas]
+                && !_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas51]
+                && !_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.OccupiedInQuestEvent]
+                && !_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.OccupiedInCutSceneEvent]
+                && !_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.WatchingCutscene]);
         _ipc.LoopController.SetCommands(_followConfig.PauseCommand, _followConfig.ResumeCommand);
 
         _vnavmesh = new VnavmeshFollow(_ipc.Vnavmesh);
@@ -237,7 +244,11 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             _ipc, _vnavmesh, _debugLog,
             getTerritory: () => TryGetTerritory(_clientState),
             getPlayerRole: GetPlayerRole,
-            resolveContentTarget: id => _partyList.FirstOrDefault(m => m.ContentId == id)?.GameObject);
+            resolveContentTarget: id => _partyList.FirstOrDefault(m => m.ContentId == id)?.GameObject,
+            targetUnavailable: () => _followEngine?.TargetContentId is ulong id
+                && (!_partyList.Any(m => m.ContentId == id && m.CurrentHP > 0)
+                    || PartyStatusReader.IsOnline(id) == false),
+            interact: TryInteractTransition);
         _partyFollow = new PartyFollowController(_partyList, _objectTable, _framework, _dtrBar, _followEngine);
 
         _followEngine.OnStateChanged += (oldState, newState) =>
@@ -260,7 +271,7 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         _framework.Update += CheckEmergencyHotkey;
 
         // 区域切换检查
-        _framework.Update += CheckZoneChange;
+        // FollowEngine handles loading and same-territory transitions before movement.
 
         // 自动接受传送邀请
         _framework.Update += CheckTeleportInvitation;
@@ -280,42 +291,6 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             _followEngine?.EmergencyStop();
     }
 
-    /// <summary>检测区域切换 → 自动恢复跟随</summary>
-    private void CheckZoneChange(IFramework _)
-    {
-        if (!_followConfig.AutoFollowAfterZoneChange) return;
-        if (_followEngine == null) return;
-
-        var current = TryGetTerritory(_clientState);
-        if (current == null) return;
-
-        if (_lastTerritory != null && _lastTerritory != current)
-        {
-            Log.Debug($"区域变更: {_lastTerritory} → {current}");
-            _lastTerritory = current;
-
-            // 等加载完成后再恢复（BetweenAreas 结束后延迟一帧）
-            if (!_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas])
-            {
-                _framework.RunOnTick(() =>
-                {
-                    if (!_followConfig.AutoFollowAfterZoneChange) return;
-                    if (_followEngine == null) return;
-                    if (string.IsNullOrEmpty(_followEngine.TargetName)) return;
-                    if (_followEngine.State is FollowState.Following) return;
-
-                    Log.Info("换图后自动恢复跟随");
-                    Log.Notice("[强效跟随] 换图后自动恢复跟随");
-                    _followEngine.Start();
-                }, TimeSpan.FromSeconds(1.5));
-            }
-        }
-        else
-        {
-            _lastTerritory = current;
-        }
-    }
-
     /// <summary>
     /// 副本通关后停止跟随并复位到初始状态（BOSS击杀完毕、系统提示"副本已完成"时）：
     /// 停寻路 → 清空跟随目标 → 迷你窗回到刚加载时的样子（按钮「跟随」、无状态、折叠区收起）。
@@ -327,7 +302,7 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         if (_followEngine == null) return;
         // 只在引擎活跃时（跟随/追赶/战斗）才处理；空闲/已暂停/紧急停止直接忽略，不打扰用户
         if (_followEngine.State is not (FollowState.Following or FollowState.CatchingUp
-            or FollowState.Combat))
+            or FollowState.Combat or FollowState.TargetLost))
             return;
 
         Log.Info("副本通关，停止跟随并复位到初始状态");
@@ -341,9 +316,60 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         _miniWindow.ResetToInitial();    // 迷你窗复位：按钮「跟随」、状态清空、折叠区收起
     }
 
+    private unsafe bool TryInteractTransition(TransitionProfile profile)
+    {
+        _pendingTransition = null;
+        var player = _objectTable.LocalPlayer;
+        if (player == null || !profile.Matches(TryGetTerritory(_clientState), player.Position)) return false;
+        // Never click through a pre-existing dialog, even if it happens to have matching text.
+        var dialog = GetSelectYesnoAddon();
+        if (dialog != null && dialog->IsVisible) return false;
+        var candidates = _objectTable.Where(o =>
+            o.ObjectKind == Dalamud.Game.ClientState.Objects.Enums.ObjectKind.EventObj
+            && o.BaseId == profile.ObjectDataId && o.IsTargetable
+            && Vector3.Distance(o.Position, profile.Source) <= profile.Radius
+            && Vector3.Distance(o.Position, player.Position) <= 3.5f).ToArray();
+        if (candidates.Length != 1) return false;
+        var system = FFXIVClientStructs.FFXIV.Client.Game.Control.TargetSystem.Instance();
+        if (system == null) return false;
+        system->InteractWithObject((FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)candidates[0].Address);
+        _pendingTransition = profile; _transitionInteractionTime = DateTime.UtcNow;
+        return true;
+    }
+
+    private unsafe void CheckTransitionConfirmation()
+    {
+        var profile = _pendingTransition;
+        if (profile == null || !ReferenceEquals(profile, _followEngine.ActiveTransitionProfile)
+            || profile.TerritoryId != TryGetTerritory(_clientState)
+            || (DateTime.UtcNow - _transitionInteractionTime).TotalSeconds > 5)
+        { _pendingTransition = null; return; }
+        if (string.IsNullOrEmpty(profile.ConfirmationText)) return;
+        var addon = GetSelectYesnoAddon();
+        if (addon == null || !addon->IsVisible) return;
+        var yesno = (AddonSelectYesno*)addon;
+        var text = yesno->PromptText != null ? yesno->PromptText->NodeText.ToString() : null;
+        if (!string.Equals(text, profile.ConfirmationText, StringComparison.Ordinal)
+            || _objectTable.LocalPlayer is not { } player
+            || !profile.Matches(TryGetTerritory(_clientState), player.Position))
+        {
+            _pendingTransition = null;
+            _followEngine.RejectTransition("传送确认框或当前位置不匹配，保持停止");
+            return;
+        }
+        _pendingTransition = null; // Exactly one confirmation, only after our own interaction.
+        addon->FireCallbackInt(0);
+    }
+
     /// <summary>每帧检测传送邀请确认框，自动点"是"</summary>
     private unsafe void CheckTeleportInvitation(IFramework _)
     {
+        if (_followEngine?.IsRecovering == true)
+        {
+            CheckTransitionConfirmation();
+            return;
+        }
+        _pendingTransition = null;
         if (!_followConfig.AutoAcceptTeleport) return;
         if (_followEngine == null) return;
         // 跟随相关状态都接受（含追赶/战斗/目标丢失），避免传送弹窗瞬间状态不对导致漏点
@@ -419,12 +445,11 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
 
     private static bool IsTeleportPrompt(string text)
     {
-        // 中/英常见传送确认文案
-        return text.Contains("传送", StringComparison.Ordinal)
-            || text.Contains("瞬移", StringComparison.Ordinal)
-            || text.Contains("Teleport", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("teleport", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("想要对你使用", StringComparison.Ordinal);
+        // Only player teleport invitations, never generic dungeon/exit confirmation text.
+        return text.Contains("传送邀请", StringComparison.Ordinal)
+            || (text.Contains("想要对你使用", StringComparison.Ordinal)
+                && (text.Contains("传送", StringComparison.Ordinal) || text.Contains("瞬移", StringComparison.Ordinal)))
+            || text.Contains("offers to teleport you", StringComparison.OrdinalIgnoreCase);
     }
 
     private static unsafe string? TryReadSelectYesnoText(AtkUnitBase* addon)
@@ -854,7 +879,6 @@ return false;
     {
         _framework.Update -= FirstFrameInit;
         _framework.Update -= CheckEmergencyHotkey;
-        _framework.Update -= CheckZoneChange;
         _framework.Update -= CheckTeleportInvitation;
         _dutyState.DutyCompleted -= OnDutyCompleted;
         _partyFollow?.Dispose();
