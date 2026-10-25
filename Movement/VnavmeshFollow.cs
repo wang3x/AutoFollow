@@ -7,6 +7,9 @@ public sealed class VnavmeshFollow
 {
     private readonly IPC.VnavmeshIPC _vnav;
 
+    public PathStatus Status => _vnav.Status;
+    public void Probe(Vector3 from, Vector3 to) => _vnav.Probe(from, to);
+    public void MoveDirect(Vector3 to) => _vnav.MoveDirect(to);
     public bool IsAvailable => _vnav.IsAvailable;
     public bool IsMoving => _vnav.IsMoving();
 
@@ -20,9 +23,9 @@ public sealed class VnavmeshFollow
 
     public void Stop()
     {
-        if (IsAvailable) _vnav.Stop();
+        _vnav.Stop();
     }
 
     /// <summary>使所有挂起的寻路结果失效（防止旧 MoveTo 结果晚到覆盖后续移动）</summary>
-    public void InvalidatePaths() { if (IsAvailable) _vnav.InvalidatePaths(); }
+    public void InvalidatePaths() { _vnav.InvalidatePaths(); }
 }

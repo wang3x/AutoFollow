@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using AutoFollow.Windows;
@@ -11,9 +11,9 @@ public sealed class IPCService : IDisposable
     public CommandLoopController LoopController { get; }
 
     public IPCService(IDalamudPluginInterface pi, ICommandManager commandManager, DebugLog debugLog,
-        Func<Vector3?> getPlayerPos)
+        Func<Vector3?> getPlayerPos, IFramework framework, Func<ushort?> getTerritory, Func<bool> canMove)
     {
-        Vnavmesh = new VnavmeshIPC(pi, debugLog, getPlayerPos);
+        Vnavmesh = new VnavmeshIPC(pi, debugLog, getPlayerPos, framework, getTerritory, canMove);
         LoopController = new CommandLoopController(commandManager);
     }
 

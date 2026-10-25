@@ -38,6 +38,8 @@ public sealed class ConditionManager
     {
         InCombat = _condition[ConditionFlag.InCombat];
         BetweenAreas = _condition[ConditionFlag.BetweenAreas]
+                    || _condition[ConditionFlag.BetweenAreas51]
+                    || _condition[ConditionFlag.WatchingCutscene]
                     || _condition[ConditionFlag.OccupiedInQuestEvent]
                     || _condition[ConditionFlag.OccupiedInCutSceneEvent];
         IsDead = _condition[ConditionFlag.Unconscious];

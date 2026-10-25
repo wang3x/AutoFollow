@@ -44,9 +44,11 @@ public class FollowConfig
     public bool ChatOutput { get; set; } = false;
 
     // ── 其他控制 ──
+    public List<TransitionProfile> TransitionProfiles { get; set; } = new();
     public bool ContinueOnTargetLost { get; set; } = true;
-    public VirtualKey CrossLineKey { get; set; } = VirtualKey.W;   // 穿线时模拟按下的前进键（默认 W=向前移动，按住型）
-    public bool CrossLineKeyIsHold { get; set; } = true;           // 该键是否按住型（true=需一直按住如W，false=自动奔跑型如R按一下持续）
+    // Legacy serialization only; no system key injection is performed.
+    public VirtualKey CrossLineKey { get; set; } = VirtualKey.W;   // 仅保留旧配置反序列化兼容，不再注入按键
+    public bool CrossLineKeyIsHold { get; set; } = true;           // 仅保留旧配置兼容
     public bool AutoFollowAfterZoneChange { get; set; } = true;
     public bool AutoAcceptTeleport { get; set; } = true;
     public bool PauseOnDutyComplete { get; set; } = true;
