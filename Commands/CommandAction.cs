@@ -13,6 +13,8 @@ public enum CommandAction
     ResumeFollow,
     ToggleFollow,
     EmergencyStop,
+    /// <summary>完全初始化：停寻路、清目标、迷你窗复位到刚加载状态</summary>
+    FullReset,
 
     // ── 目标管理 ──
     FollowCurrentTarget,

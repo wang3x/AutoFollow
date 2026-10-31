@@ -971,6 +971,8 @@ public sealed class FollowEngine : IDisposable
         _conditionManager.ManualResume();
         IsEmergencyStopped = false;
         _bossEngageNotified = false;    // 顺手复位「进入Boss战」提示标记
+        _combatEndTime = DateTime.MinValue;  // 清战斗结束时间戳，避免复位后残留的脱战判定
+        _wasInCombat = false;
 
         if (restoreLoopOutput)
         {

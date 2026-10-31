@@ -388,11 +388,14 @@ public sealed class DebugWindow
             ImGui.TextDisabled("关闭后关键状态变更仍会输出到指令日志");
         }
 
-        // ── 紧急停止热键（默认关闭） ──
-        if (ImGui.CollapsingHeader("紧急停止热键"))
+        // ── 完全初始化热键（默认关闭） ──
+        if (ImGui.CollapsingHeader("完全初始化热键"))
         {
-            var ki = (int)_config.EmergencyStopKey;
-            DrawHotkeySelector("热键##ek", ref ki, vk => _config.EmergencyStopKey = (Dalamud.Game.ClientState.Keys.VirtualKey)vk);
+            var ki = (int)_config.ResetKey;
+            DrawHotkeySelector("热键##resetKey", ref ki,
+                vk => { _config.ResetKey = (Dalamud.Game.ClientState.Keys.VirtualKey)vk; _onSave(); });
+            ImGui.TextDisabled("按一下立即完全复位：停止寻路、清除跟随目标、迷你窗回到「跟随」，等同刚加载插件");
+            ImGui.TextDisabled("不显示任何状态提示；设为「未设置」即关闭该热键");
         }
 
         // ── 循环插件命令（默认关闭） ──

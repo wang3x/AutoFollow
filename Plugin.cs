@@ -47,6 +47,8 @@ private DateTime _flyMountStart;
     private int _flyVersion;
     private ushort? _lastTerritory;
     private DateTime _lastTeleportClick = DateTime.MinValue;
+    /// <summary>完全初始化热键上一帧是否按下（用于上升沿检测）</summary>
+    private bool _resetKeyDown;
     private PluginStatusChecker _statusChecker = null!;
 
     public Plugin(
@@ -248,8 +250,8 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             }
         };
 
-        // 紧急停止热键检查（每帧轻量检测）
-        _framework.Update += CheckEmergencyHotkey;
+        // 完全初始化热键检查（每帧轻量检测，按下沿触发一次）
+        _framework.Update += CheckResetHotkey;
 
         // 区域切换检查
         _framework.Update += CheckZoneChange;
@@ -263,13 +265,36 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         Log.Debug("首帧初始化完成");
     }
 
-    private void CheckEmergencyHotkey(IFramework _)
+    /// <summary>
+    /// 完全初始化热键：按一下把插件恢复到刚加载时的状态（停寻路、清目标、迷你窗复位）。
+    /// 只在按下的那一帧触发一次（上升沿），按住不会重复执行；不输出聊天提示。
+    /// </summary>
+    private void CheckResetHotkey(IFramework _)
     {
-        var key = _followConfig.EmergencyStopKey;
-        if (key == Dalamud.Game.ClientState.Keys.VirtualKey.NO_KEY) return;
+        var key = _followConfig.ResetKey;
+        if (key == Dalamud.Game.ClientState.Keys.VirtualKey.NO_KEY)
+        {
+            _resetKeyDown = false;
+            return;
+        }
 
-        if (_keyState[key])
-            _followEngine?.EmergencyStop();
+        var down = _keyState.IsVirtualKeyValid(key) && _keyState[key];
+        if (down && !_resetKeyDown)
+            FullReset();
+
+        _resetKeyDown = down;
+    }
+
+    /// <summary>
+    /// 完全复位到插件刚加载时的状态：取消飞行/传送轮询链、停寻路、清跟随目标、
+    /// 迷你窗回到「跟随」初始态。不弹任何聊天提示（只写调试日志）。
+    /// </summary>
+    private void FullReset()
+    {
+        _flyVersion++;                       // 作废所有在途的飞行/传送轮询链
+        _followEngine?.ResetToIdle();        // 停寻路 + 清目标/惯移/条件暂停 + 状态回 Idle
+        _miniWindow?.ResetToInitial();       // 按钮回「跟随」、状态文案清空、折叠区收起
+        _debugLog.Log("cmd", "完全初始化（热键）");
     }
 
     /// <summary>检测区域切换 → 自动恢复跟随</summary>
@@ -499,6 +524,10 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
                 _followEngine?.EmergencyStop();
                 break;
 
+            case CommandAction.FullReset:
+                FullReset();
+                break;
+
             case CommandAction.FollowCurrentTarget:
                 unsafe
                 {
@@ -647,8 +676,8 @@ return false;
         Log.Notice($"目标: {target}  距离: {distStr}y  区域: {zone}");
         Log.Notice($"模式: Vnavmesh寻路  {vnavReady}");
         Log.Notice($"循环插件: {loopInfo}");
-        if (_followConfig.EmergencyStopKey != VirtualKey.NO_KEY)
-            Log.Notice($"紧急停止热键: {_followConfig.EmergencyStopKey}");
+        if (_followConfig.ResetKey != VirtualKey.NO_KEY)
+            Log.Notice($"完全初始化热键: {_followConfig.ResetKey}");
         Log.Notice("================================");
     }
 
@@ -844,7 +873,7 @@ return false;
     public void Dispose()
     {
         _framework.Update -= FirstFrameInit;
-        _framework.Update -= CheckEmergencyHotkey;
+        _framework.Update -= CheckResetHotkey;
         _framework.Update -= CheckZoneChange;
         _framework.Update -= CheckTeleportInvitation;
         _dutyState.DutyCompleted -= OnDutyCompleted;

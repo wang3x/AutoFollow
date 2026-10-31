@@ -33,7 +33,14 @@ public class FollowConfig
     public bool PauseOnTargetLost { get; set; } = true;
     public bool PauseOnDead { get; set; } = true;
 
-    public VirtualKey EmergencyStopKey { get; set; } = VirtualKey.F8;
+    /// <summary>完全初始化热键：按一下立即完全复位（等同刚加载插件），不显示状态提示</summary>
+    public VirtualKey ResetKey { get; set; } = VirtualKey.F8;
+
+    /// <summary>
+    /// 旧版「紧急停止热键」字段（JSON 键名必须保持 EmergencyStopKey 才能读到老配置）。
+    /// 仅用于迁移：Migration 里读到非默认值就搬到 <see cref="ResetKey"/>，随后置 null 并不再参与逻辑。
+    /// </summary>
+    public VirtualKey? EmergencyStopKey { get; set; }
 
     public string? PauseCommand { get; set; } = "/rotation off";
     public string? ResumeCommand { get; set; } = "/rotation Auto";
@@ -59,7 +66,8 @@ public class FollowConfig
         new() { Command = "/ff",    Action = CommandAction.ToggleFollow,       Description = "切换跟随开关" },
         new() { Command = "/fst",   Action = CommandAction.StatusReport,       Description = "输出状态报告" },
         new() { Command = "/ft",    Action = CommandAction.SetFollowTarget,    Description = "设置跟随目标 <玩家名>" },
-        new() { Command = "/fes",   Action = CommandAction.EmergencyStop,      Description = "紧急停止" },
+        new() { Command = "/fes",   Action = CommandAction.EmergencyStop,      Description = "紧急停止（保留：仅停跟随不复位）" },
+        new() { Command = "/freset", Action = CommandAction.FullReset,          Description = "完全初始化（复位到刚加载状态）" },
         new() { Command = "/fdbg",  Action = CommandAction.ToggleDebugWindow,  Description = "打开/关闭主窗口" },
         new() { Command = "/ftar",  Action = CommandAction.FollowCurrentTarget,Description = "跟随当前选中的目标" },
     };
