@@ -79,19 +79,27 @@ public sealed class MiniWindow
         _flagExpanded = false;
     }
 
-    /// <summary>外部启动/停止跟随时同步按钮状态</summary>
+    /// <summary>
+    /// 外部启动/停止跟随时同步按钮状态 —— 引擎状态是唯一真相，这里做完整映射，
+    /// 避免按钮停留在旧态（曾出现引擎已停、按钮仍显示「继续」，点下去走老目标恢复逻辑的问题）。
+    ///
+    ///   Idle                          → 跟随（还没开始）
+    ///   Following / CatchingUp        → 暂停（正在跟，点它会急停）
+    ///   Combat / Paused /
+    ///   EmergencyStopped / TargetLost → 继续（都处于"停着"的状态）
+    /// </summary>
     public void SyncBtnState(FollowState engineState)
     {
-        if (engineState == FollowState.Idle)
+        _btnState = engineState switch
         {
-            _btnState = BtnState.Idle;
+            FollowState.Idle => BtnState.Idle,
+            FollowState.Following or FollowState.CatchingUp => BtnState.Following,
+            _ => BtnState.Paused,
+        };
+
+        // Idle / Following 时没有需要提示的暂停原因，清空状态位
+        if (engineState is FollowState.Idle or FollowState.Following or FollowState.CatchingUp)
             _engineStatus = null;
-        }
-        else if (engineState is FollowState.Following or FollowState.CatchingUp)
-        {
-            _btnState = BtnState.Following;
-            _engineStatus = null;
-        }
     }
 
     public void Draw()
