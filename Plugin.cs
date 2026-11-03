@@ -313,12 +313,12 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
                 {
                     if (_followEngine == null) return;
 
-                    // 换图 = 换了场景。先复位迷你窗（清状态文案、收起折叠区），
-                    // 但按钮必须再按引擎真实状态同步一次 —— 否则引擎仍在 Following 时，
-                    // 按钮会停在「跟随」而与实际状态脱节（这正是本版要修的 bug）。
-                    Log.Info($"换图 → 迷你窗复位（引擎原状态 {_followEngine.State}）");
+                    // 换图 = 换了场景，旧目标多半已不在。迷你窗一律复位成「跟随」，
+                    // 且**不再**按引擎状态回同步 —— 引擎此刻可能还残留着上一张图的
+                    // Combat/EmergencyStopped，同步回去会把按钮拉成「继续」，
+                    // 于是新本里点一下走的就是"恢复旧目标"逻辑而非"开始跟随"。
+                    Log.Info($"换图 → 迷你窗复位为「跟随」（引擎原状态 {_followEngine.State}）");
                     _miniWindow?.ResetToInitial();
-                    _miniWindow?.SyncBtnState(_followEngine.State);   // 以引擎为准校正按钮
 
                     if (!_followConfig.AutoFollowAfterZoneChange) return;
                     if (string.IsNullOrEmpty(_followEngine.TargetName)) return;

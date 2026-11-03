@@ -59,6 +59,9 @@ public sealed class FollowEngine : IDisposable
 
     private const double OutOfCombatDelay = 1.0;
     private const double StartupGracePeriod = 2.0;
+    /// <summary>非战斗状态下的恢复跟随距离（= 停止距离 5y + 3y 缓冲，防止在 5y 边界抖动）</summary>
+    private const float NonCombatResumeRange = 8f;
+
     private const float LastKnownArriveRange = 3f;   // 视为到达最后已知点
     private const float InertiaCancelRange = 100f;  // 目标 ≤100y 取消待命恢复跟随
     private const double CrossLinePushSeconds = 2.0; // 穿线推进时长
@@ -122,8 +125,14 @@ public sealed class FollowEngine : IDisposable
         if (_state is FollowState.Idle or FollowState.Paused or FollowState.EmergencyStopped)
             return;
 
+        // 先刷新游戏状态（战斗/过图/死亡），保证本帧后续所有判定读到的是同一个值。
+        // 下面「停步阈值按是否战斗中区分」就依赖 InCombat，若沿用上一帧的值会差一帧。
+        _conditionManager.Update();
+
         // 每帧距离检查（独立于扫描间隔，防贴脸）
-        // Boss 战 → 按「离 Boss 目标圈外沿」判定；其余（小怪/无目标）→ 沿用原「离跟随目标 ≤5y」
+        // Boss 战 → 按「离 Boss 目标圈外沿」判定
+        // 非 Boss  → 战斗中 ≤10y 停；非战斗 ≤5y 停（停止距离，纯粹防贴脸）
+        //            与下面的恢复阈值（30y / 8y）配对，避免在边界上抖动
         if (_state is FollowState.Following or FollowState.CatchingUp)
         {
             var p = _objectTable[0];
@@ -131,9 +140,10 @@ public sealed class FollowEngine : IDisposable
             if (p != null && t != null)
             {
                 var boss = ResolveBossAnchor();
+                var stopRange = _conditionManager.InCombat ? _config.CombatEnterRange : 5f;
                 bool reached = boss != null
                     ? DistanceToBossCircle(p.Position, boss) <= EffectiveBossStopRange
-                    : Vector3.Distance(p.Position, t.Position) <= 5f;
+                    : Vector3.Distance(p.Position, t.Position) <= stopRange;
 
                 if (reached)
                 {
@@ -150,8 +160,7 @@ public sealed class FollowEngine : IDisposable
         // 地图黑名单检测
         if (CheckBlacklistedMap()) return;
 
-        // 脱战检测 — 每帧都检查，不跟随扫描间隔
-        _conditionManager.Update();
+        // 脱战检测 — 每帧都检查，不跟随扫描间隔（状态已在帧首刷新过）
         var inCombat = _conditionManager.InCombat;
         if (!inCombat && _wasInCombat)
         {
@@ -181,9 +190,10 @@ public sealed class FollowEngine : IDisposable
                 if (p != null)
                 {
                     var t = ResolveTarget();
-                    if (t != null && Vector3.Distance(p.Position, t.Position) <= _config.CombatEnterRange)
+                    // 已脱战 → 用非战斗阈值（8y）判断是否"够近了不必恢复"
+                    if (t != null && Vector3.Distance(p.Position, t.Position) <= NonCombatResumeRange)
                     {
-                        _debugLog.Log("state", "脱战但距离近，跳过恢复");
+                        _debugLog.Log("state", $"脱战但距离≤{NonCombatResumeRange}y，跳过恢复");
                         return;
                     }
                 }
@@ -229,27 +239,50 @@ public sealed class FollowEngine : IDisposable
 
         // 暂停条件：距离≤进入值 + 已过启动保护期
         // Boss 战跳过此判定（改由每帧的「Boss 圈外沿」判定接管），否则坦克站在圈心时会被 10y 规则提前叫停
+        //
+        // 进入阈值同样按战斗状态区分，与下面的恢复阈值配对形成滞回：
+        //   战斗中：≤10y 进、>30y 出
+        //   非战斗：≤5y（停止距离）进、>8y 出   ← 非战斗不需要隔着 10y 停
         var graceRemaining = StartupGracePeriod - (DateTime.UtcNow - _followStartTime).TotalSeconds;
         var bossAnchor = ResolveBossAnchor();
-        if (bossAnchor == null && DistanceToTarget <= _config.CombatEnterRange
+        var enterRange = _conditionManager.InCombat ? _config.CombatEnterRange : 5f;
+        if (bossAnchor == null && DistanceToTarget <= enterRange
             && _state != FollowState.Combat && graceRemaining <= 0)
         {
-            Log.Print($"[强效跟随] 距离≤{_config.CombatEnterRange}y，暂停跟随");
-            _debugLog.Log("state", $"暂停跟随 距离≤{_config.CombatEnterRange}y");
+            Log.Print($"[强效跟随] 距离≤{enterRange}y，暂停跟随");
+            _debugLog.Log("state", $"暂停跟随 距离≤{enterRange}y（战斗={_conditionManager.InCombat}）");
             _vnavmesh.Stop(); SetState(FollowState.Combat); return;
         }
-        // >30y 恢复跟随+暂停循环（Boss战不恢复）
-        if (DistanceToTarget > _config.CombatExitRange && _state == FollowState.Combat)
+        // ── 恢复跟随：按「是否真在战斗」用不同阈值 ──
+        // 战斗中：>30y 才恢复（配合输出插件、避免贴脸反复横跳）
+        // 非战斗：>8y 就恢复（没有战斗顾虑，本来就不该隔着 10/30y 干等）
+        // 两者都保留一段滞回，避免在边界上每帧来回抖。
+        if (_state == FollowState.Combat)
         {
-            if (IsBossTarget())
+            var resumeRange = _conditionManager.InCombat
+                ? _config.CombatExitRange    // 战斗：30y
+                : NonCombatResumeRange;      // 非战斗：8y（= 停止距离 5y + 3y 缓冲）
+
+            if (DistanceToTarget > resumeRange)
             {
-                _debugLog.Log("state", "Boss战距离>30y但Boss仍在，不恢复");
-            }
-            else
-            {
-                Log.Print($"[强效跟随] 距离>{_config.CombatExitRange}y，恢复跟随");
-                _debugLog.Log("state", $"恢复跟随 距离>{_config.CombatExitRange}y");
-                ResumeFollow();
+                // 判定用的是实际生效的 Boss 锚点（坦克正在打的那只），而不是"场上有没有 Boss"。
+                // 两者语义不同：IsBossTarget() 只看 40y 内有没有任意 Boss 级敌人，
+                // 而 GetBossAnchor() 才是「当前这场战斗是不是 Boss 战」——停步判定也用的是它，必须保持一致。
+                if (GetBossAnchor() != null)
+                {
+                    _debugLog.Log("state", $"Boss战进行中，距离>{resumeRange}y也不恢复跟随");
+                }
+                else if (IsBossTarget())
+                {
+                    // 兜底：坦克暂时丢了目标（切目标/读条），但场上确实有 Boss，同样不恢复
+                    _debugLog.Log("state", $"场上仍有Boss（坦克暂未锁定），距离>{resumeRange}y也不恢复跟随");
+                }
+                else
+                {
+                    Log.Print($"[强效跟随] 距离>{resumeRange}y，恢复跟随");
+                    _debugLog.Log("state", $"恢复跟随 距离>{resumeRange}y（战斗={_conditionManager.InCombat}）");
+                    ResumeFollow();
+                }
             }
         }
 
@@ -519,7 +552,16 @@ public sealed class FollowEngine : IDisposable
     /// <summary>恢复跟随：开疾跑、立即扫描坐标、发送移动</summary>
     private void ResumeFollow()
     {
-        // Boss 战中不恢复
+        // Boss 战进行中不恢复 —— 与停步判定用同一套（GetBossAnchor），
+        // 避免"停步按 Boss 圈算、恢复却按全场扫 Boss"导致两套判定打架。
+        // 战斗中锚点存在即视为 Boss 战，不再额外要求 InCombat（有些阶段会短暂脱战）。
+        if (GetBossAnchor() != null)
+        {
+            _debugLog.Log("state", "Boss战进行中，跳过恢复");
+            return;
+        }
+
+        // 兜底：坦克目标临时丢失但场上确有 Boss，也不恢复
         if (_conditionManager.InCombat && IsBossTarget())
         {
             _debugLog.Log("state", "Boss战中，跳过恢复");
@@ -890,6 +932,17 @@ public sealed class FollowEngine : IDisposable
 
         _followTargetName = playerName; _followTargetId = null; _lastSentPosition = null;
         ClearInertiaState();
+
+        // 清掉上一局残留的距离与时间点：DistanceToTarget 只在 OnTick 里刷新，
+        // 设目标后到下一轮 tick 之间它还是旧值（可能是上一张图的 80y），
+        // 会让「>30y 恢复跟随」分支误触发。重置成「未知」等 tick 算出真值。
+        DistanceToTarget = float.MaxValue;
+        _lastSentPosition = null;
+        _lastKnownTargetPos = null;
+        _prevKnownTargetPos = null;
+        _combatEndTime = DateTime.MinValue;
+        _wasInCombat = false;
+
         var target = ResolveTarget();
         if (target != null) _followTargetId = target.EntityId;
         else _debugLog.Log("命令", $"设目标{playerName}但未找到");
