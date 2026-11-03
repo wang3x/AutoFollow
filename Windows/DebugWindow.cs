@@ -32,6 +32,12 @@ public sealed class DebugWindow
     // 按键捕获：用 IKeyState（真实游戏按键状态）检测上升沿，不受 ImGui 焦点限制
     private readonly Func<Dalamud.Game.ClientState.Keys.VirtualKey, bool>? _getKeyState;
     private readonly bool[] _prevKeyDown = new bool[256];
+
+    // ── 循环插件命令：预设下拉 + 测试发送 ──
+    // 延迟解析：DebugWindow 构造时 IPCService 还没建（首帧才初始化），所以传函数而不是实例
+    private readonly Func<CommandLoopController?>? _getLoopController;
+    private int _presetIndex = -1;      // -1 = 尚未初始化，首次绘制时按当前命令反查
+    private string _presetHint = "";    // 上次填入/匹配到的预设提示
     private float _manualX, _manualY, _manualZ;
     private DateTime _lastScan;
 
@@ -43,7 +49,8 @@ public sealed class DebugWindow
         Func<FollowState> getState, Func<string?> getTargetName, Func<float> getDistance,
         Func<bool> getInCombat, Action onClearTarget,
         Action onMoveFlag, Action onFlyFlag, Action onStop, Func<ushort?> getTerritory,
-        Func<Dalamud.Game.ClientState.Keys.VirtualKey, bool>? getKeyState = null)
+        Func<Dalamud.Game.ClientState.Keys.VirtualKey, bool>? getKeyState = null,
+        Func<CommandLoopController?>? getLoopController = null)
     {
         _log = log; _statusChecker = statusChecker; _config = config;
         _getPlayerPos = getPlayerPos; _getTargetPos = getTargetPos;
@@ -51,6 +58,7 @@ public sealed class DebugWindow
         _getState = getState; _getTargetName = getTargetName; _getDistance = getDistance;
         _getInCombat = getInCombat; _onClearTarget = onClearTarget; _onMoveFlag = onMoveFlag; _onFlyFlag = onFlyFlag; _onStop = onStop; _getTerritory = getTerritory;
         _getKeyState = getKeyState;
+        _getLoopController = getLoopController;
     }
 
     public void Draw()
@@ -407,14 +415,7 @@ public sealed class DebugWindow
         // ── 循环插件命令（默认关闭） ──
         if (ImGui.CollapsingHeader("循环插件命令"))
         {
-            var s = _config.PauseCommand ?? "";
-            if (ImGui.InputText("暂停命令##pc", ref s, 128))
-                _config.PauseCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
-            s = _config.ResumeCommand ?? "";
-            if (ImGui.InputText("恢复命令##rc", ref s, 128))
-                _config.ResumeCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
-            ImGui.TextDisabled("默认 RotationSolverReborn: /rotation off / /rotation Auto");
-            ImGui.TextDisabled("AEAssist: 暂停 /aestop，恢复留空，并打开目标选择器");
+            DrawLoopCommandSection();
         }
 
         // ── Mini 窗口按钮颜色（默认关闭） ──
@@ -447,6 +448,82 @@ public sealed class DebugWindow
         ImGui.Separator();
         if (ImGui.Button("保存全部")) { _onSave(); _onCommandReload(); }
         ImGui.EndChild();
+    }
+
+    /// <summary>
+    /// 循环插件命令区：预设下拉 + 两个可编辑输入框 + 测试发送。
+    ///
+    /// 预设只往输入框里填文本，不写入配置身份 —— 用户填/改完仍然是普通的字符串配置，
+    /// 所以「选中预设」和「手动输入」不存在两套数据，也不会有同步问题。
+    /// </summary>
+    private void DrawLoopCommandSection()
+    {
+        // 首次展开时按当前配置反查匹配的预设，让用户一眼看出自己在用哪套
+        if (_presetIndex < 0)
+            _presetIndex = LoopPresets.MatchIndex(_config.PauseCommand, _config.ResumeCommand);
+
+        var names = LoopPresets.All.Select(p => p.Name).ToArray();
+        if (ImGui.Combo("预设##loopPreset", ref _presetIndex, names, names.Length))
+            _presetHint = "";   // 只改选择，不立刻覆盖用户输入
+
+        ImGui.SameLine();
+        var canApply = _presetIndex > 0;
+        ImGui.BeginDisabled(!canApply);
+        if (ImGui.Button("填入"))
+        {
+            var preset = LoopPresets.All[_presetIndex];
+            if (preset.Pause != null) _config.PauseCommand = preset.Pause;
+            // Resume 为 null 表示"恢复留空"，这与"不覆盖"语义冲突，所以显式清空
+            _config.ResumeCommand = preset.Resume;
+            _presetHint = preset.Note;
+        }
+        ImGui.EndDisabled();
+
+        if (_presetIndex == 0)
+            ImGui.TextDisabled("自定义：两个输入框完全由你填写，不做任何改动");
+        else if (!string.IsNullOrEmpty(_presetHint))
+            ImGui.TextDisabled(_presetHint);
+
+        ImGui.Separator();
+
+        var s = _config.PauseCommand ?? "";
+        if (ImGui.InputText("暂停命令##pc", ref s, 128))
+        {
+            _config.PauseCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+            _presetIndex = LoopPresets.MatchIndex(_config.PauseCommand, _config.ResumeCommand);
+        }
+
+        s = _config.ResumeCommand ?? "";
+        if (ImGui.InputText("恢复命令##rc", ref s, 128))
+        {
+            _config.ResumeCommand = string.IsNullOrWhiteSpace(s) ? null : s.Trim();
+            _presetIndex = LoopPresets.MatchIndex(_config.PauseCommand, _config.ResumeCommand);
+        }
+
+        ImGui.TextDisabled("改完直接生效，无需点「保存全部」");
+
+        // ── 测试发送：立即真实执行一次，用于当场验证命令对不对 ──
+        // 注意先 SetCommands 同步编辑器里的最新文本，否则测的是上次保存的旧命令
+        var loop = _getLoopController?.Invoke();
+        ImGui.Separator();
+        loop?.SetCommands(_config.PauseCommand, _config.ResumeCommand);   // 内部已做变更检测
+
+        ImGui.BeginDisabled(loop == null || !loop.IsConfigured);
+        if (ImGui.Button("测试 暂停"))
+        {
+            loop?.SendPause();
+            Log.Notice($"[强效跟随] 测试发送暂停命令: {_config.PauseCommand}");
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("测试 恢复"))
+        {
+            loop?.SendResume();
+            Log.Notice($"[强效跟随] 测试发送恢复命令: {_config.ResumeCommand ?? "(未填，回退发暂停命令)"}");
+        }
+        ImGui.EndDisabled();
+        ImGui.SameLine();
+        ImGui.TextDisabled(loop == null ? "（IPC 未就绪）"
+            : loop.IsConfigured ? "点一下立即真实发送，不是预览" : "请先填写暂停命令");
     }
 
     private static void DrawDragRow(string label, float value, float speed, float min, float max,

@@ -27,11 +27,21 @@ public sealed class CommandLoopController
         _commandManager = commandManager;
     }
 
-    /// <summary>更新命令配置（用户保存设置时调用）</summary>
+    /// <summary>
+    /// 更新命令配置。UI 每帧都会调用它同步编辑器内容，因此**内容没变时不打日志、也不赋值**，
+    /// 避免日志文件被每帧一条刷爆。
+    /// </summary>
     public void SetCommands(string? pause, string? resume)
     {
-        _pauseCmd = string.IsNullOrWhiteSpace(pause) ? null : pause.Trim();
-        _resumeCmd = string.IsNullOrWhiteSpace(resume) ? null : resume.Trim();
+        var p = string.IsNullOrWhiteSpace(pause) ? null : pause.Trim();
+        var r = string.IsNullOrWhiteSpace(resume) ? null : resume.Trim();
+
+        if (string.Equals(p, _pauseCmd, StringComparison.Ordinal)
+            && string.Equals(r, _resumeCmd, StringComparison.Ordinal))
+            return;
+
+        _pauseCmd = p;
+        _resumeCmd = r;
         Log.Info($"循环插件命令已更新: 暂停=[{_pauseCmd ?? ""}] 恢复=[{_resumeCmd ?? ""}]");
     }
 

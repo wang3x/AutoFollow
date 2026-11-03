@@ -116,7 +116,9 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             onFlyFlag: () => MoveToFlag(fly: true),
             onStop: () => _commandManager.ProcessCommand("/vnav stop"),
             getTerritory: () => TryGetTerritory(_clientState),
-            getKeyState: vk => _keyState.IsVirtualKeyValid(vk) && _keyState[vk]);
+            getKeyState: vk => _keyState.IsVirtualKeyValid(vk) && _keyState[vk],
+            // 延迟解析：_ipc 在首帧才建，这里传惰性求值，悬停/点击时才取
+            getLoopController: () => _ipc?.LoopController);
 
         _miniWindow = new MiniWindow(
             _followConfig,
