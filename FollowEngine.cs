@@ -59,8 +59,6 @@ public sealed class FollowEngine : IDisposable
 
     private const double OutOfCombatDelay = 1.0;
     private const double StartupGracePeriod = 2.0;
-    /// <summary>非战斗状态下的恢复跟随距离（= 停止距离 5y + 3y 缓冲，防止在 5y 边界抖动）</summary>
-    private const float NonCombatResumeRange = 8f;
 
     private const float LastKnownArriveRange = 3f;   // 视为到达最后已知点
     private const float InertiaCancelRange = 100f;  // 目标 ≤100y 取消待命恢复跟随
@@ -140,7 +138,9 @@ public sealed class FollowEngine : IDisposable
             if (p != null && t != null)
             {
                 var boss = ResolveBossAnchor();
-                var stopRange = _conditionManager.InCombat ? _config.CombatEnterRange : 5f;
+                var stopRange = _conditionManager.InCombat
+                    ? _config.CombatEnterRange
+                    : _config.NonCombatEnterRange;
                 bool reached = boss != null
                     ? DistanceToBossCircle(p.Position, boss) <= EffectiveBossStopRange
                     : Vector3.Distance(p.Position, t.Position) <= stopRange;
@@ -190,10 +190,10 @@ public sealed class FollowEngine : IDisposable
                 if (p != null)
                 {
                     var t = ResolveTarget();
-                    // 已脱战 → 用非战斗阈值（8y）判断是否"够近了不必恢复"
-                    if (t != null && Vector3.Distance(p.Position, t.Position) <= NonCombatResumeRange)
+                    // 已脱战 → 用非战斗的恢复阈值判断是否"够近了不必恢复"
+                    if (t != null && Vector3.Distance(p.Position, t.Position) <= _config.NonCombatExitRange)
                     {
-                        _debugLog.Log("state", $"脱战但距离≤{NonCombatResumeRange}y，跳过恢复");
+                        _debugLog.Log("state", $"脱战但距离≤{_config.NonCombatExitRange}y，跳过恢复");
                         return;
                     }
                 }
@@ -245,7 +245,17 @@ public sealed class FollowEngine : IDisposable
         //   非战斗：≤5y（停止距离）进、>8y 出   ← 非战斗不需要隔着 10y 停
         var graceRemaining = StartupGracePeriod - (DateTime.UtcNow - _followStartTime).TotalSeconds;
         var bossAnchor = ResolveBossAnchor();
-        var enterRange = _conditionManager.InCombat ? _config.CombatEnterRange : 5f;
+        var enterRange = _conditionManager.InCombat
+            ? _config.CombatEnterRange
+            : _config.NonCombatEnterRange;
+
+        // 恢复阈值必须大于停步阈值，否则形成「停→立刻恢复→再停」的每帧抖动。
+        // 用户可以在设置页把两个值设反，这里兜底保证至少领先 1y。
+        var minResume = enterRange + 1f;
+        var resumeRange = _conditionManager.InCombat
+            ? Math.Max(_config.CombatExitRange, minResume)
+            : Math.Max(_config.NonCombatExitRange, minResume);
+
         if (bossAnchor == null && DistanceToTarget <= enterRange
             && _state != FollowState.Combat && graceRemaining <= 0)
         {
@@ -259,10 +269,6 @@ public sealed class FollowEngine : IDisposable
         // 两者都保留一段滞回，避免在边界上每帧来回抖。
         if (_state == FollowState.Combat)
         {
-            var resumeRange = _conditionManager.InCombat
-                ? _config.CombatExitRange    // 战斗：30y
-                : NonCombatResumeRange;      // 非战斗：8y（= 停止距离 5y + 3y 缓冲）
-
             if (DistanceToTarget > resumeRange)
             {
                 // 判定用的是实际生效的 Boss 锚点（坦克正在打的那只），而不是"场上有没有 Boss"。
@@ -319,9 +325,11 @@ public sealed class FollowEngine : IDisposable
             }
         }
 
-        // 距离≤5y → 停止移动（不贴脸）
+        // 防贴脸：距离≤停步阈值就停住，不往目标身上贴。
+        // 这里用「非战斗停步值」而非 enterRange —— 战斗中 enterRange 是 10y（含输出协同含义），
+        // 拿它当"防贴脸"会让启动保护期（2s）内提前停步，语义也不对。
         // Boss 战跳过：此时停步与否由「离 Boss 圈外沿」决定，否则坦克站圈心时又会贴脸
-        if (bossAnchor == null && DistanceToTarget <= 5f)
+        if (bossAnchor == null && DistanceToTarget <= _config.NonCombatEnterRange)
         {
             if (_vnavmesh.IsMoving) _vnavmesh.Stop();
             return;

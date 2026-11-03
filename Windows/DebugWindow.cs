@@ -266,12 +266,18 @@ public sealed class DebugWindow
                 ImGui.TableSetupColumn("label", ImGuiTableColumnFlags.WidthStretch);
                 ImGui.TableSetupColumn("val", ImGuiTableColumnFlags.WidthFixed, 140);
 
-                DrawDragRow("进入战斗区 (y)", _config.CombatEnterRange, 0.5f, 0f, 50f,
+                DrawDragRow("【战斗中】停步 (y)", _config.CombatEnterRange, 0.5f, 0f, 50f,
                     v => _config.CombatEnterRange = v,
-                    "与目标距离 ≤ 此值时暂停跟随，恢复循环插件");
-                DrawDragRow("离开战斗区 (y)", _config.CombatExitRange, 0.5f, 0f, 200f,
+                    "战斗中：与目标距离 ≤ 此值时暂停跟随、恢复循环插件输出");
+                DrawDragRow("【战斗中】恢复 (y)", _config.CombatExitRange, 0.5f, 0f, 200f,
                     v => _config.CombatExitRange = v,
-                    "与目标距离 > 此值时恢复跟随，暂停循环插件");
+                    "战斗中：与目标距离 > 此值时恢复跟随、暂停循环插件输出");
+                DrawDragRow("【非战斗】停步 (y)", _config.NonCombatEnterRange, 0.5f, 0f, 30f,
+                    v => _config.NonCombatEnterRange = v,
+                    "非战斗：与目标距离 ≤ 此值时停步（纯粹防贴脸，没有战斗顾虑可设小一点）");
+                DrawDragRow("【非战斗】恢复 (y)", _config.NonCombatExitRange, 0.5f, 0f, 50f,
+                    v => _config.NonCombatExitRange = v,
+                    "非战斗：与目标距离 > 此值时恢复跟随。需大于上面的停步值，否则会在边界反复抖动");
                 DrawDragRow("扫描间隔 (秒)", _config.ScanInterval, 0.1f, 0.5f, 10f,
                     v => _config.ScanInterval = v,
                     "每 N 秒检测一次目标坐标，越大更新越少停顿越少");
@@ -463,6 +469,8 @@ public sealed class DebugWindow
     {
         _config.CombatEnterRange = 10f;
         _config.CombatExitRange = 30f;
+        _config.NonCombatEnterRange = 5f;
+        _config.NonCombatExitRange = 8f;
         _config.ScanInterval = 1f;
         _config.SprintThreshold = 20f;
         _config.MoveThreshold = 5f;

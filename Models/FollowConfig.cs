@@ -11,8 +11,15 @@ public class FollowConfig
     public Vector4 BtnColorIdle      { get; set; } = new(0.45f, 0.45f, 0.45f, 1f); // 灰
     public Vector4 BtnColorFollowing { get; set; } = new(0.20f, 0.80f, 0.30f, 1f); // 绿
     public Vector4 BtnColorPaused    { get; set; } = new(1.00f, 0.70f, 0.10f, 1f); // 琥珀
+    // ── 战斗中的停步 / 恢复距离 ──
     public float CombatEnterRange { get; set; } = 10f;
     public float CombatExitRange { get; set; } = 30f;
+
+    // ── 非战斗中的停步 / 恢复距离（没有战斗顾虑，可贴得更近、追得更勤） ──
+    /// <summary>非战斗时距目标 ≤ 此值就停步（纯粹防贴脸）</summary>
+    public float NonCombatEnterRange { get; set; } = 5f;
+    /// <summary>非战斗时距目标 &gt; 此值就恢复跟随（与停步保持缓冲，防边界抖动）</summary>
+    public float NonCombatExitRange { get; set; } = 8f;
 
     // ── Boss 战专用：按「目标圈外沿」判定停止，小怪不受影响 ──
     public bool BossCircleStop { get; set; } = true;
