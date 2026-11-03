@@ -49,6 +49,8 @@ private DateTime _flyMountStart;
     private DateTime _lastTeleportClick = DateTime.MinValue;
     /// <summary>完全初始化热键上一帧是否按下（用于上升沿检测）</summary>
     private bool _resetKeyDown;
+    /// <summary>本轮旗标流程等待 NavMesh 就绪的起始时间（过图后 NavMesh 需重建）</summary>
+    private DateTime _navWaitStart;
     private PluginStatusChecker _statusChecker = null!;
 
     public Plugin(
@@ -110,8 +112,8 @@ _debugLog = new DebugLog();
 getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
             getInCombat: () => _followEngine?.Conditions.InCombat ?? false,
             onClearTarget: () => _followEngine?.SetTarget(null),
-            onMoveFlag: MoveFlagWithMount,
-            onFlyFlag: () => { _commandManager.ProcessCommand("/mount"); _commandManager.ProcessCommand("/vnav flyflag"); },
+            onMoveFlag: () => MoveToFlag(fly: false),
+            onFlyFlag: () => MoveToFlag(fly: true),
             onStop: () => _commandManager.ProcessCommand("/vnav stop"),
             getTerritory: () => TryGetTerritory(_clientState),
             getKeyState: vk => _keyState.IsVirtualKeyValid(vk) && _keyState[vk]);
@@ -152,57 +154,8 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
                 } catch { }
                 return null;
             },
-            onMoveFlag: MoveFlagWithMount,
-            onFlyFlag: () => {
-                // 先读旗标（无论是否上坐骑，都需要区域检测）
-                var flagInfo = ReadFlagMarker();
-                if (flagInfo == null)
-                {
-                    Log.Notice("[强效跟随] 未设置旗标");
-                    return;
-                }
-
-                var currentTerr = TryGetTerritory(_clientState);
-                if (currentTerr == null || currentTerr.Value != (ushort)flagInfo.Value.territoryId)
-                {
-                    // 不同区域 → 先传送再上坐骑飞
-                    var aetheryteId = FindAetheryteForTerritory(flagInfo.Value.territoryId);
-                    if (aetheryteId == null)
-                    {
-                        Log.Notice("[强效跟随] 旗标所在区域未开通传送点");
-                        return;
-                    }
-
-                    _vnavmesh.Stop();
-                    Log.Notice("[强效跟随] 旗标在另一区域，正在传送...");
-                    _flyVersion++;
-                    var v = _flyVersion;
-                    _flyMountStart = DateTime.UtcNow;
-                    unsafe {
-                        var telepo = FFXIVClientStructs.FFXIV.Client.Game.UI.Telepo.Instance();
-                        if (telepo != null) telepo->Teleport(aetheryteId.Value, 0);
-                    }
-                    _framework.RunOnTick(() => OnTeleportCheck(v, flagInfo.Value.territoryId), TimeSpan.FromSeconds(1.0));
-                    return;
-                }
-
-                // 同区域：已上坐骑就直接飞，否则上坐骑再飞
-                if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
-                {
-                    _commandManager.ProcessCommand("/vnav flyflag");
-                    return;
-                }
-
-                _vnavmesh.Stop();
-                unsafe {
-                    var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
-                    if (am != null) am->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.Mount, 1);
-                }
-                _flyVersion++;
-                var ver = _flyVersion;
-                _flyMountStart = DateTime.UtcNow;
-                _framework.RunOnTick(() => OnFlyCheckMount(ver), TimeSpan.FromSeconds(1.0));
-            },
+            onMoveFlag: () => MoveToFlag(fly: false),
+            onFlyFlag: () => MoveToFlag(fly: true),
             onStop: () => _commandManager.ProcessCommand("/vnav stop"));
 
         _pi.UiBuilder.Draw += DrawUi;
@@ -222,8 +175,12 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         Log.Debug("首帧初始化");
 
         _ipc = new IPCService(_pi, _commandManager, _debugLog,
-            getPlayerPos: () => _objectTable[0]?.Position);
+            getPlayerPos: () => _objectTable[0]?.Position,
+            framework: _framework);
         _ipc.LoopController.SetCommands(_followConfig.PauseCommand, _followConfig.ResumeCommand);
+
+        // ── 诊断：异步探测运行环境（不阻塞主线程），结果切回主线程输出 ──
+        var probeTask = ProbeEnvironmentAsync();   // fire-and-forget，故意不 await（内部自捕获异常）
 
         _vnavmesh = new VnavmeshFollow(_ipc.Vnavmesh);
 
@@ -295,6 +252,44 @@ getDistance: () => _followEngine?.DistanceToTarget ?? float.MaxValue,
         _followEngine?.ResetToIdle();        // 停寻路 + 清目标/惯移/条件暂停 + 状态回 Idle
         _miniWindow?.ResetToInitial();       // 按钮回「跟随」、状态文案清空、折叠区收起
         _debugLog.Log("cmd", "完全初始化（热键）");
+    }
+
+    /// <summary>
+    /// 异步探测运行环境（是否被主线程断言拦截、标记绕行是否生效），
+    /// 结果切回框架主线程输出。探测最多 3s，期间不阻塞游戏。
+    /// </summary>
+    private async Task ProbeEnvironmentAsync()
+    {
+        try
+        {
+            var (repo, ver, blocked, afterMark, probeErr) =
+                await VnavmeshIPC.ProbeEnvironmentAsync(_objectTable).ConfigureAwait(false);
+
+            var repoName = repo.Contains("ottercorp", StringComparison.OrdinalIgnoreCase) ? "国服(ottercorp)"
+                         : repo.Contains("goatcorp", StringComparison.OrdinalIgnoreCase) ? "国际服(goatcorp)"
+                         : repo;
+            var blockedText = blocked == true ? "【有拦截】" : blocked == false ? "【无拦截】" : "【探测超时】";
+            var afterText = afterMark == true ? "【仍被拦】" : afterMark == false ? "【已放行】" : "【未知】";
+
+            // 聊天输出必须回主线程（RunOnFrameworkThread 返回 Task，这里不等待）
+            var t = _framework.RunOnFrameworkThread(() =>
+            {
+                Log.Notice($"[强效跟随][诊断] 运行环境: {repoName}  v{ver}");
+                Log.Notice($"[强效跟随][诊断] 后台线程读: 未标记 {blockedText}   标记后 {afterText}");
+                _debugLog.Log("诊断", $"repo={repo} ver={ver} blocked={blocked} afterMark={afterMark} err={probeErr}");
+            });
+            await t.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                var t2 = _framework.RunOnFrameworkThread(
+                    () => Log.Notice($"[强效跟随][诊断] 环境探测失败: {ex.Message}"));
+                await t2.ConfigureAwait(false);
+            }
+            catch { }
+        }
     }
 
     /// <summary>检测区域切换 → 自动恢复跟随</summary>
@@ -770,24 +765,140 @@ return false;
         return null;
     }
 
-    /// <summary>步行至flag：优先上坐骑（读条期间可移动，无需等待），已在坐骑则直接走</summary>
-    private void MoveFlagWithMount()
+    // ── 旗标移动（步行 / 飞行）—— 两个按钮共用同一条链路，仅落地后的动作不同 ──
+
+    /// <summary>原生上坐骑（陆行鸟）。ProcessCommand("/mount") 不转发游戏原生命令，必须走 ActionManager。</summary>
+    private unsafe void UseMount()
     {
-        if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
+        var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
+        if (am != null) am->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.Mount, 1);
+    }
+
+    private bool IsMounted => _condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted];
+
+    /// <summary>
+    /// 前往旗标统一入口。
+    /// </summary>
+    /// <param name="fly">
+    ///   <c>true</c>  —— 飞行（/vnav flyflag，需要坐骑就绪，轮询等待，5s 超时回退步行）；
+    ///   <c>false</c> —— 步行（先 /vnav moveflag 动起来，再在移动中上坐骑，不等读条）。
+    /// </param>
+    /// <remarks>
+    /// 同一区域 → 直接开始移动；
+    /// 跨区域 → 先用 Telepo 传送到该区域已解锁水晶，落地后再按模式开始移动
+    /// （超时 20s、落地后等 1.5s 让世界加载完成）。
+    /// </remarks>
+    private void MoveToFlag(bool fly)
+    {
+        var flagInfo = ReadFlagMarker();
+        if (flagInfo == null)
         {
-            // 已在坐骑上 → 直接地面移动
-            _commandManager.ProcessCommand("/vnav moveflag");
+            Log.Notice("[强效跟随] 未设置旗标");
             return;
         }
 
-        // 不在坐骑上 → 触发上坐骑，同时立即开始移动（读条期间可正常移动，无需轮询等待）
-        _vnavmesh.Stop();
-        unsafe
+        var mode = fly ? "飞行" : "步行";
+        var currentTerr = TryGetTerritory(_clientState);
+        if (currentTerr == null || currentTerr.Value != (ushort)flagInfo.Value.territoryId)
         {
-            var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
-            if (am != null) am->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.Mount, 1);
+            // ── 跨区域：先传送 ──
+            var aetheryteId = FindAetheryteForTerritory(flagInfo.Value.territoryId);
+            if (aetheryteId == null)
+            {
+                Log.Notice("[强效跟随] 旗标所在区域未开通传送点");
+                return;
+            }
+
+            _vnavmesh.Stop();
+            Log.Notice($"[强效跟随] 旗标在另一区域，正在传送（落地后{mode}前往）...");
+            _flyVersion++;
+            var v = _flyVersion;
+            _flyMountStart = DateTime.UtcNow;   // 复用为「本轮流程」计时起点（传送/等坐骑共用）
+            unsafe
+            {
+                var telepo = FFXIVClientStructs.FFXIV.Client.Game.UI.Telepo.Instance();
+                if (telepo != null) telepo->Teleport(aetheryteId.Value, 0);
+            }
+            _framework.RunOnTick(() => OnTeleportCheck(v, flagInfo.Value.territoryId, fly), TimeSpan.FromSeconds(1.0));
+            return;
         }
+
+        // ── 同区域：直接开始 ──
+        BeginFlagMove(fly);
+    }
+
+    /// <summary>
+    /// 开始向旗标移动（不含传送）。
+    /// 步行：先 moveflag 动起来，再在移动中触发上坐骑（坐骑读条允许移动，无需等待）；
+    /// 飞行：必须先等坐骑就绪才能 flyflag，所以轮询等待、5s 超时回退步行。
+    /// 两者都会先等 NavMesh 就绪 —— 刚进图/刚传送时 NavMesh 尚在重建，
+    /// 此时发的 moveflag/flyflag 会被 vnavmesh 丢弃，表现为"上马了但人不动"。
+    /// </summary>
+    private void BeginFlagMove(bool fly)
+    {
+        // 等 NavMesh 就绪（同图刚进图也可能还没生成完）
+        if (!_vnavmesh.IsNavReady)
+        {
+            _navWaitStart = DateTime.UtcNow;
+            _flyVersion++;
+            var v0 = _flyVersion;
+            _framework.RunOnTick(() => BeginFlagMoveWhenNavReady(v0, fly), TimeSpan.FromMilliseconds(500));
+            return;
+        }
+
+        BeginFlagMoveNow(fly);
+    }
+
+    /// <summary>NavMesh 已就绪，真正开始向旗标移动</summary>
+    private void BeginFlagMoveNow(bool fly)
+    {
+        if (fly)
+        {
+            if (IsMounted)
+            {
+                _commandManager.ProcessCommand("/vnav flyflag");
+                return;
+            }
+
+            _vnavmesh.Stop();
+            UseMount();
+            _flyVersion++;
+            var ver = _flyVersion;
+            _flyMountStart = DateTime.UtcNow;
+            _framework.RunOnTick(() => OnFlyCheckMount(ver), TimeSpan.FromSeconds(1.0));
+            return;
+        }
+
+        // 步行：先发移动指令，再在移动中上坐骑。
+        // 游戏的坐骑读条允许移动，所以不必等坐骑就绪才走 —— 先动起来，随后边跑边读条，
+        // 读条完成时角色已经在路上，整体更快，也避免了原地读条期间被怪打断后卡住。
         _commandManager.ProcessCommand("/vnav moveflag");
+
+        if (IsMounted) return;
+
+        // 已经在移动中，直接触发上坐骑（读条期间 vnavmesh 继续驱动角色）
+        UseMount();
+    }
+
+    /// <summary>同图出发前等待 NavMesh 就绪（最多 30s），就绪后继续 BeginFlagMove</summary>
+    private void BeginFlagMoveWhenNavReady(int version, bool fly)
+    {
+        if (version != _flyVersion) return;
+
+        if (!_vnavmesh.IsNavReady)
+        {
+            if ((DateTime.UtcNow - _navWaitStart).TotalSeconds >= 30)
+            {
+                Log.Notice("[强效跟随] 寻路数据 30s 未就绪，无法自动移动；请检查 vnavmesh 的 NavMesh 是否已生成");
+                return;
+            }
+            var v = version; var f = fly;
+            _framework.RunOnTick(() => BeginFlagMoveWhenNavReady(v, f), TimeSpan.FromMilliseconds(500));
+            return;
+        }
+
+        _debugLog.Log("状态", $"NavMesh 就绪，耗时 {(DateTime.UtcNow - _navWaitStart).TotalSeconds:F1}s");
+        BeginFlagMoveNow(fly);
     }
 
     /// <summary>轮询检测坐骑是否就绪，成功→飞行，超时→步行回退</summary>
@@ -795,7 +906,7 @@ return false;
     {
         if (version != _flyVersion) return; // 旧轮询链，丢弃
 
-        if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
+        if (IsMounted)
         {
             _commandManager.ProcessCommand("/vnav flyflag");
             return;
@@ -810,8 +921,8 @@ return false;
         _framework.RunOnTick(() => OnFlyCheckMount(v), delay: TimeSpan.FromSeconds(1.0));
     }
 
-    /// <summary>轮询等待传送完成，到达目标区域后自动上坐骑飞</summary>
-    private void OnTeleportCheck(int version, uint targetTerritory)
+    /// <summary>轮询等待传送完成；落地后按 fly 决定走 flyflag 还是 moveflag</summary>
+    private void OnTeleportCheck(int version, uint targetTerritory, bool fly)
     {
         if (version != _flyVersion) return;
 
@@ -824,8 +935,8 @@ return false;
         // 仍在传送/加载中
         if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.BetweenAreas])
         {
-            var v = version; var t = targetTerritory;
-            _framework.RunOnTick(() => OnTeleportCheck(v, t), delay: TimeSpan.FromSeconds(1.0));
+            var v = version; var t = targetTerritory; var f = fly;
+            _framework.RunOnTick(() => OnTeleportCheck(v, t, f), delay: TimeSpan.FromSeconds(1.0));
             return;
         }
 
@@ -833,33 +944,59 @@ return false;
         var currentTerr = TryGetTerritory(_clientState);
         if (currentTerr == null || currentTerr.Value != (ushort)targetTerritory)
         {
-            var v = version; var t = targetTerritory;
-            _framework.RunOnTick(() => OnTeleportCheck(v, t), delay: TimeSpan.FromSeconds(1.0));
+            var v = version; var t = targetTerritory; var f = fly;
+            _framework.RunOnTick(() => OnTeleportCheck(v, t, f), delay: TimeSpan.FromSeconds(1.0));
             return;
         }
 
-        // 已到达 → 稍等让世界加载完成，然后上坐骑
+        // 已到达 → 稍等让世界加载完成，再开始移动（沿用同一版本号，避免中途被作废）
         _flyMountStart = DateTime.UtcNow;
-        _framework.RunOnTick(() => StartMountAfterTeleport(version), delay: TimeSpan.FromSeconds(1.5));
+        _navWaitStart = DateTime.UtcNow;   // NavMesh 等待计时从这里开始
+        _framework.RunOnTick(() => AfterTeleportArrived(version, fly), delay: TimeSpan.FromSeconds(1.5));
     }
 
-    /// <summary>传送到达后：如果已上坐骑直接飞，否则上坐骑→飞</summary>
-    private void StartMountAfterTeleport(int version)
+    /// <summary>
+    /// 传送落地后：先等 NavMesh 重建完成（过图后 vnavmesh 有一段时间 Nav.IsReady=false，
+    /// 此时发的 moveflag/flyflag 会被丢弃，表现为"上马了但人不动"），再开始移动。
+    /// </summary>
+    private void AfterTeleportArrived(int version, bool fly)
     {
         if (version != _flyVersion) return;
 
-        // 已上坐骑（传送后恢复坐骑状态）→ 直接飞
-        if (_condition[Dalamud.Game.ClientState.Conditions.ConditionFlag.Mounted])
+        // 等 NavMesh 就绪：最多等 30s，每 0.5s 探测一次
+        if (!_vnavmesh.IsNavReady)
         {
-            _commandManager.ProcessCommand("/vnav flyflag");
+            if ((DateTime.UtcNow - _navWaitStart).TotalSeconds >= 30)
+            {
+                Log.Notice("[强效跟随] 已到目标区域但寻路数据 30s 未就绪，无法自动移动；请检查 vnavmesh 的 NavMesh 是否已生成");
+                return;
+            }
+
+            var v = version; var f = fly;
+            _framework.RunOnTick(() => AfterTeleportArrived(v, f), delay: TimeSpan.FromMilliseconds(500));
             return;
         }
 
-        _vnavmesh.Stop();
-        unsafe {
-            var am = FFXIVClientStructs.FFXIV.Client.Game.ActionManager.Instance();
-            if (am != null) am->UseAction(FFXIVClientStructs.FFXIV.Client.Game.ActionType.Mount, 1);
+        _debugLog.Log("状态", $"NavMesh 就绪，耗时 {(DateTime.UtcNow - _navWaitStart).TotalSeconds:F1}s");
+
+        if (!fly)
+        {
+            // 步行：先发移动，再在移动中上坐骑（坐骑读条允许移动，无需等待）
+            _commandManager.ProcessCommand("/vnav moveflag");
+            if (!IsMounted) UseMount();
+            Log.Notice("[强效跟随] 已抵达目标区域，开始步行至旗标");
+            return;
         }
+
+        // 飞行：已上坐骑（传送后可能恢复坐骑状态）→ 直接飞；否则上坐骑并轮询等待
+        if (IsMounted)
+        {
+            _commandManager.ProcessCommand("/vnav flyflag");
+            Log.Notice("[强效跟随] 已抵达目标区域，开始飞行至旗标");
+            return;
+        }
+
+        UseMount();
         _flyMountStart = DateTime.UtcNow;
         _framework.RunOnTick(() => OnFlyCheckMount(version), delay: TimeSpan.FromSeconds(1.0));
     }

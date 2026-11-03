@@ -8,6 +8,10 @@ public sealed class VnavmeshFollow
     private readonly IPC.VnavmeshIPC _vnav;
 
     public bool IsAvailable => _vnav.IsAvailable;
+
+    /// <summary>NavMesh 是否已就绪（实时）。过图后重建期间为 false，此时发移动指令会被丢弃。</summary>
+    public bool IsNavReady => _vnav.IsNavReady;
+
     public bool IsMoving => _vnav.IsMoving();
 
     public VnavmeshFollow(IPC.VnavmeshIPC vnav) => _vnav = vnav;
